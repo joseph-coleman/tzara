@@ -1,0 +1,70 @@
+/*
+ * Copyright (C) 2026 Joseph E. Coleman
+ * This file is part of Tzara, licensed under the GNU Affero General
+ * Public License v3.0 or later. See LICENSE.txt.
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+/* ===========================================================================
+ * Ocean  --  an example Tzara theme
+ * ===========================================================================
+ * This entire theme is ONE file. It recolors the whole wiki -- header, nav,
+ * links, callouts, code, canvas, buttons -- by overriding just the four seed
+ * tokens that tzara.css derives everything else from. It copies nothing from
+ * the default theme, so it never drifts when tzara.css, base.html, the menus,
+ * or any future feature change.
+ *
+ * Activate it with:   TZARA_TEMPLATE=ocean   (env var; see .env.template)
+ *
+ * See README.md in this folder for the full explanation and the deeper
+ * customisation tiers.
+ *
+ * WHY ONLY :root, WHY UNLAYERED
+ * -----------------------------
+ * tzara.css puts its tokens in `@layer site`. base.html loads this file last
+ * AND unlayered, so these `:root` declarations win the cascade over the layered
+ * defaults. CSS custom-property substitution is lazy: every derived shade in
+ * tzara.css is `oklch(from var(--base-color) ...)` and is recomputed at use time,
+ * so overriding the seed re-tints the whole palette -- including the dark-mode
+ * @media block, which only re-derives from these seeds and never re-seeds them.
+ *
+ * WHY THESE FOUR, AND NOTHING ELSE
+ * --------------------------------
+ * --background is the light-mode surface, --foreground the light-mode ink.
+ * In dark mode tzara.css SWAPS their roles (bg<->fg) rather than redefining
+ * them, so a single light-leaning --background + dark-leaning --foreground pair
+ * renders correctly in BOTH modes. Do not add a dark-mode block here; you'd be
+ * fighting a mechanism that already works.
+ * ------------------------------------------------------------------------- */
+
+:root {
+    /* Accent hue: nav bars, buttons, focus rings, callout tints, canvas nodes.
+       Everything shaded (--lighter/--darker/--base-120/...) derives from this. */
+    --base-color: oklch(0.749 0.089 223.7);  /* was #ffd05f amber -> ocean teal-blue */
+    /* --base-color: oklch(0.686 0.099 225); */
+
+    /* Light-mode page surface (kept light so the dark-mode swap stays legible). */
+    --background: #f2f7fa;       /* was #fbf4eb warm paper -> cool mist */
+
+    /* Light-mode text / dark-mode surface after the swap (kept near-black). */
+    --foreground: #0d1b24;       /* was #1c170b warm ink -> deep sea slate */
+
+    /* Link hue. Kept clearly distinct from --base-color so links never
+       disappear into accented surfaces. */
+    --base-link-color: #c2410c;  /* was #1c16d3 indigo -> contrasting rust */
+}
+
+/* Body font -----------------------------------------------------------------
+ * tzara.css sets the UI font only on `body`; everything inherits it, so this
+ * single rule re-fonts the whole wiki. It wins over tzara.css's `body` rule
+ * (same specificity, loaded later + unlayered). Code stays monospace: code
+ * blocks / inline code / the editor set their own `font-family: monospace`.
+ *
+ * This is a system-serif stack -- no web-font download, so it stays fast and
+ * works offline (this is a local-only wiki). To use a specific typeface
+ * instead, @import a web font at the TOP of this file and put its name first
+ * in the stack; keep the serif fallbacks so it degrades gracefully offline. */
+body {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino,
+                 "Book Antiqua", Georgia, "Times New Roman", serif;
+}

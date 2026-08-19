@@ -1,0 +1,28 @@
+# External-inference overlay: use an already-running Ollama/Lemonade server
+# (on the host or LAN) instead of the bundled Docker Ollama container.
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.external-inference.yml
+#   OLLAMA_URL=http://host.docker.internal:11434   # host.docker.internal = the host, on Docker Desktop
+#
+# Both bundled-Ollama services are assigned to the `bundled-ollama` profile. A
+# service with a profile is EXCLUDED from the default `up` unless that profile is
+# activated (COMPOSE_PROFILES) - and, crucially, an excluded service's IMAGE IS
+# NEVER PULLED. 
+#
+# In other words, don't download an Ollama container image since you probably
+# already have it installed on your host machine, and it runs faster there anyways.
+services:
+  ollamaserver:
+    # Local Ollama container - not started, image not pulled (external server used).
+    profiles: ["bundled-ollama"]
+  ollama-init:
+    # First-run model-pull job - the external server already hosts the models.
+    profiles: ["bundled-ollama"]
+  tzaraworker:
+    # The worker's base config hard-depends on ollamaserver; mark it optional so
+    # the worker starts even though that service is now profile-excluded. (Map
+    # merge preserves the required pgserver/redisserver dependencies.)
+    depends_on:
+      ollamaserver:
+        condition: service_started
+        required: false

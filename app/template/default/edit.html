@@ -1,0 +1,534 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+{% extends "base.html" %}
+
+
+{% block base_header %}
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+    <script src="/template/{{theme}}/math.js"></script>
+
+    <script src="/template/{{theme}}/codemirror.bundle.js"></script>
+    <script src="/template/{{theme}}/edit_assist.js"></script>
+
+    <script>
+    async function moveDocument(button){
+        // Move uses vault-relative paths + an explicit vault so /api/move parses the
+        // source and destination symmetrically. Prefilling with the vault-explicit
+        // display path (wiki/{vault}/...) double-applied the vault segment.
+        const vault = button.dataset.vault;
+        const source = button.dataset.rel;           // vault-relative, no extension
+        const destination = window.prompt(
+            "Move / rename this document to (path relative to the vault, e.g. notes/New_Name):",
+            source
+        );
+        if (destination === null) return;            // cancelled
+        const dest = destination.trim();
+        if (!dest || dest === source) return;        // no change
+        button.disabled = true;
+        try {
+            const response = await fetch("/api/move", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({document_name: source, destination: dest, vault}),
+            });
+            const result = await response.json();
+            if (result.status === "ok") {
+                window.location.href = result.redirect;
+            } else {
+                window.alert("Move failed: " + (result.reason || result.status));
+                button.disabled = false;
+            }
+        } catch (e) {
+            window.alert("Move failed: " + e);
+            button.disabled = false;
+        }
+    }
+
+    async function editPreview(button){
+        const edit_form = document.querySelector("form[name='edit_document_form']");
+        const input_document_name = edit_form.querySelector("input[name='document_name']");
+        const markdown = window.cmView.state.doc.toString();
+        const document_name = input_document_name.value;
+
+        const formData = new FormData();
+        formData.append("markdown", markdown);
+        formData.append("document_name", document_name);
+
+        const response = await fetch("/api/markdown/", {method:"POST", body: formData});
+        const formatted_markdown = await response.text();
+        const preview_area = document.getElementById("preview_area");
+
+        preview_area.innerHTML = formatted_markdown;
+
+        // Re-render any math in the freshly injected preview (shared config in math.js).
+        if (window.tzaraRenderMath) window.tzaraRenderMath(preview_area);
+
+        return false;
+    }
+    </script>
+
+    <style>
+        /* Establish a new block formatting context so floated elements in the
+           rendered preview (e.g. column layouts built from float:left divs) are
+           contained here and don't leak out to collapse the editor below it. */
+        #preview_area {
+            display: flow-root;
+        }
+
+
+    /* background-color: color-mix(in oklab, var(--base-color) 10%, var(--bg-color));
+    border: none;
+    border: 3px solid color-mix(in oklab, var(--base-color) 45%, var(--bg-color));
+    border-radius: var(--radius-md);
+    max-widt */
+
+        #dropZone {
+            border: 3px solid;
+            border-radius: var(--radius-lg);
+            border-color: color-mix(in oklab, var(--base-color) 90%, var(--fg-color));
+            padding: var(--space-xl);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: var(--space-lg);
+            text-align: left;
+            background-color: color-mix(in oklab, var(--base-color) 10%, var(--bg-color));
+            box-shadow: inset 0px 5px 10px -5px  color-mix(in oklab, var(--base-color) 50%, var(--fg-color));
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        
+        #dropZone.dragover {
+            border-color: color-mix(in oklab, var(--base-180) 90%, var(--fg-color)); 
+            background:  color-mix(in oklab, var(--base-180-lighter) 10%, var(--bg-color));
+            box-shadow: inset 0px 5px 20px -5px  color-mix(in oklab, var(--base-180) 50%, var(--fg-color));
+        }
+
+        #dropZone p {
+            margin: var(--space-xs) 0;
+            color: var(--darkest);
+        }
+        
+        .upload-icon {
+            font-size: 4em;
+            line-height: 1;
+            flex: none;
+        }
+        /*****/
+        #uploadsContainer {
+            margin-top: 0.5em;
+        }
+        
+        .upload-item { /* queued item */
+            background-color: color-mix(in oklab, var(--base-color) 30%, var(--bg-color));
+            border: 1px solid var(--base-color);
+            border-color: color-mix(in oklab, var(--base-color) 70%, var(--fg-color));
+
+            border-radius: var(--radius-md);
+            padding: var(--space-sm);
+            margin-bottom: var(--space-lg);
+        }
+        
+        .upload-item.uploading {
+            background-color: color-mix(in oklab, var(--base-180) 10%, var(--bg-color));
+            border-color: color-mix(in oklab, var(--base-180) 90%, var(--fg-color));
+        }
+        
+        .upload-item.complete {
+            background-color: color-mix(in oklab, var(--base-color) 10%, var(--bg-color));
+            border-color: color-mix(in oklab, var(--base-color) 90%, var(--fg-color));
+            opacity: 0.75;
+        }
+        
+        .upload-item.error {
+            background-color: color-mix(in oklab, var(--base-300) 10%, var(--bg-color));
+            border-color: color-mix(in oklab, var(--base-300) 90%, var(--fg-color));
+        }
+        
+
+        .upload-filename {
+            font-weight: bold;
+            margin-bottom: 0.8em;
+            word-break: break-all;
+        }
+
+        
+        .upload-progress-bar {
+            width: 100%;
+            height: 2em;
+            
+            background: linear-gradient(90deg,  color-mix(in oklab, var(--base-180) 30%, var(--bg-color)), color-mix(in oklab, var(--base-180) 90%, var(--bg-color)));
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            margin: 0.8em 0;
+            position: relative;
+            align-content: center;
+        }
+        
+        .upload-progress-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg,  color-mix(in oklab, var(--base-color) 60%, var(--bg-color)), color-mix(in oklab, var(--base-color) 100%, var(--bg-color)));
+            transition: width 0.3s ease;
+            position: absolute;
+            left: 0;
+            top: 0;
+            color: var(--fg-color);
+            font-weight: bold;
+            font-size: 1.0em;
+        }
+
+        .error .upload-progress-fill {
+            background: linear-gradient(90deg, color-mix(in oklab, var(--base-300) 70%, var(--bg-color)), color-mix(in oklab, var(--base-300) 90%, var(--bg-color)));
+        }
+
+        .complete .upload-progress-fill {
+            background: linear-gradient(90deg, color-mix(in oklab, var(--base-color) 70%, var(--bg-color)), color-mix(in oklab, var(--base-color) 90%, var(--bg-color)));
+        }
+
+        .upload-progress-text{
+            width:fit-content;
+            /* height: 100%; */
+            position: absolute;
+            /* top: 0; */
+    
+            font-weight: bold;
+            white-space: nowrap;
+            font-size: 1.0em;
+            transition: all 0.5s ease;
+            color: var(--fg-color);
+            padding-left: 1em;
+            padding-right: 1em;
+            line-height: 0em;
+        }
+
+        .upload-progress-text.progress-text-right {
+                    color: var(--fg-color) !important;
+                    right: 0% !important; 
+                }
+
+        .upload-progress-text.progress-text-left {
+                    color:var(--fg-color) !important;
+                    left: 0% !important;
+        }
+
+        .queue-info {
+            text-align: center;
+            color: var(--fg-color);
+            font-size: 1.4em;
+            margin-top: var(--space-sm);
+            font-style: italic;
+        }
+        
+        #fileInput {
+            display: none;
+        }
+
+
+    </style>
+
+    <script defer src="/template/{{theme}}/upload.js"></script>
+
+    <script defer>
+    document.addEventListener("DOMContentLoaded", () => {
+        const { EditorView, EditorState, Compartment, keymap, lineNumbers,
+                highlightActiveLine, drawSelection, dropCursor, highlightSpecialChars,
+                defaultKeymap, history, historyKeymap, indentWithTab,
+                searchKeymap, highlightSelectionMatches,
+                closeBrackets, closeBracketsKeymap,
+                markdown, python, languages, indentUnit, indentOnInput, bracketMatching,
+                foldGutter, foldKeymap, syntaxHighlighting, defaultHighlightStyle,
+                oneDark, unifiedMergeView, getChunks, goToNextChunk } = CMEditor;
+
+        // Theme compartment for dynamic light/dark switching
+        const themeCompartment = new Compartment();
+        const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+        const getTheme = () => darkQuery.matches ? oneDark : EditorView.baseTheme({});
+
+        // Read initial content from the hidden textarea
+        // (textarea correctly decodes HTML entities from the backend's escape() call)
+        const initialDoc = document.getElementById("editor-initial-content").value;
+
+        // Unified diff against the document as of page load. Held in a compartment so
+        // toggling reconfigures the live view instead of rebuilding it: undo history,
+        // cursor position and EditAssist state all survive. Unified (not MergeView's
+        // side-by-side) because #document caps the editor at 800px, which leaves too
+        // few columns to split into two panes of wrapped markdown.
+        const diffCompartment = new Compartment();
+        const baselineDoc = initialDoc;
+        let diffOn = false;
+
+        // Optional: Customizing the Python LanguageDescription to include 'jupyter'
+        const pythonLang = languages.find(l => l.name === "Python");
+        if (pythonLang && !pythonLang.alias.includes("jupyter")) {
+        pythonLang.alias.push("jupyter");
+        }
+
+
+        const cmView = new EditorView({
+            parent: document.getElementById("editor-container"),
+            state: EditorState.create({
+                doc: initialDoc,
+                extensions: [
+                    lineNumbers(),
+                    highlightActiveLine(),
+                    // highlightSpecialChars(),
+                    drawSelection(),
+                    dropCursor(),
+                    bracketMatching(),
+                    closeBrackets(),
+                    indentUnit.of("    "),
+                    indentOnInput(),
+                    foldGutter(),
+                    history(),
+                    highlightSelectionMatches(),
+                    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+                    markdown({ codeLanguages: languages }),
+                    keymap.of([
+                        indentWithTab,
+                        ...closeBracketsKeymap,
+                        ...defaultKeymap,
+                        ...searchKeymap,
+                        ...historyKeymap,
+                        ...foldKeymap,
+                        { key: "Mod-Shift-d", run: () => { setDiff(!diffOn); return true; } },
+                        { key: "F7", run: goToNextChunk },
+                    ]),
+                    themeCompartment.of(getTheme()),
+                    diffCompartment.of([]),
+                    ...(window.EditAssist ? window.EditAssist.extension() : []),
+                    EditorView.lineWrapping,
+                    EditorView.theme({
+                        "&": { height: "100%" },
+                        ".cm-scroller": { overflow: "auto" },
+                        ".cm-content": { fontFamily: "'Courier New', Courier, monospace", fontSize: "13pt" },
+                        ".cm-gutters": { fontFamily: "'Courier New', Courier, monospace", fontSize: "13pt" },
+                        // Merge-view colors. These belong here rather than in tzara.css:
+                        // that file is wrapped in @layer site, and unlayered author
+                        // styles (which is how CodeMirror injects its baseTheme) win over
+                        // layered ones regardless of specificity. EditorView.theme is
+                        // ranked above baseTheme by construction, so it lands.
+                        // --color-*-bg are light-dark() OKLCH offsets from the theme seed
+                        // (tzara.css) and flip on their own in dark mode.
+                        ".cm-deletedChunk": { backgroundColor: "color-mix(in oklab, var(--color-danger-bg) 35%, var(--bg-color))" },
+                        "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": { backgroundColor: "color-mix(in oklab, var(--color-success-bg) 35%, var(--bg-color))" },
+                        ".cm-deletedChunk .cm-deletedText": { background: "color-mix(in oklab, var(--color-danger-bg) 95%, var(--bg-color))" },
+                        "&.cm-merge-b .cm-changedText": { background: "color-mix(in oklab, var(--color-success-bg) 95%, var(--bg-color))" },
+                        ".cm-changeGutter": { backgroundColor: "color-mix(in oklab, var(--base-color) 30%, var(--bg-color))" },
+                        // Default is position:absolute at the chunk's top-right, which
+                        // sits on top of the deleted text - at this column width that
+                        // hides the very prose the chunk exists to show. The buttons are
+                        // the chunk's first child, so going static floats them onto their
+                        // own row above it. Costs one line; vertical space is the cheap
+                        // axis here.
+                        // --text-sm on the wrapper is what sizes the buttons: they take
+                        // font-size 1em (--text-md) from the site button rule, so the
+                        // scale has to come from their container - the same mechanism
+                        // .cm-ai-chip uses in tzara.css.
+                        ".cm-deletedChunk .cm-chunkButtons": {
+                            position: "static",
+                            display: "block",
+                            textAlign: "right",
+                            padding: "0 0 var(--space-xxs) 0",
+                            fontSize: "var(--text-sm)",
+                        },
+                        // Mirror the site button (#document button in tzara.css), which
+                        // is what the EditAssist accept/reject chips actually render as -
+                        // that rule outranks .cm-ai-chip button on specificity. These
+                        // overrides are needed at all because the merge baseTheme sets
+                        // border:none and a solid red/green fill.
+                        ".cm-deletedChunk .cm-chunkButtons button": {
+                            backgroundColor: "var(--base-color)",
+                            color: "var(--contrast-color)",
+                            border: "2px solid var(--darker)",
+                            borderRadius: "var(--radius-sm)",
+                            padding: "var(--space-sm) var(--space-lg)",
+                            fontSize: "var(--text-md)",
+                            cursor: "pointer",
+                        },
+                        ".cm-deletedChunk .cm-chunkButtons button[name=accept]": {
+                            borderColor: "rgb(from var(--color-success) r g b / 0.6)",
+                        },
+                        ".cm-deletedChunk .cm-chunkButtons button[name=reject]": {
+                            borderColor: "rgb(from var(--color-danger) r g b / 0.6)",
+                            opacity: "0.85",
+                        },
+                    }),
+                    // Route file drops to the upload system instead of inserting as text
+                    EditorView.domEventHandlers({
+                        drop(event) {
+                            if (event.dataTransfer && event.dataTransfer.files.length > 0) {
+                                event.preventDefault();
+                                for (const file of event.dataTransfer.files) {
+                                    queueUpload(file);
+                                }
+                                return true;
+                            }
+                            return false;
+                        },
+                        dragover(event) {
+                            if (event.dataTransfer && event.dataTransfer.types.includes("Files")) {
+                                event.preventDefault();
+                                event.dataTransfer.dropEffect = "copy";
+                                return true;
+                            }
+                            return false;
+                        },
+                    }),
+                    // Keep the hunk count live, and stand down when EditAssist wants the
+                    // lines: its proposal decorations paint over the same rows as the
+                    // merge view. Dispatching inside an update is illegal, hence the
+                    // timeout. The button is disabled while a proposal is up so the
+                    // diff can't simply be switched back on into the same collision.
+                    EditorView.updateListener.of((update) => {
+                        const pending = !!(window.EditAssist && window.EditAssist.hasPending
+                                           && window.EditAssist.hasPending(update.state));
+                        setDiffButtonEnabled(!pending);
+                        if (!diffOn) return;
+                        if (pending) {
+                            setTimeout(() => setDiff(false), 0);
+                            return;
+                        }
+                        if (update.docChanged) updateDiffButton(update.state);
+                    }),
+                ],
+            }),
+        });
+
+        // Expose globally for upload handler and preview
+        window.cmView = cmView;
+        new ResizeObserver(() => cmView.requestMeasure()).observe(document.getElementById("editor-container"));
+
+        // --- Unified diff toggle ---------------------------------------------
+        // getChunks returns null while the merge field is out of the config (diff off).
+        function diffChunkCount(state) {
+            const result = getChunks(state || cmView.state);
+            return result && result.chunks ? result.chunks.length : 0;
+        }
+
+        // Cached so the per-keystroke updateListener isn't writing to the DOM every time.
+        let diffButtonEnabled = true;
+        function setDiffButtonEnabled(enabled) {
+            if (enabled === diffButtonEnabled) return;
+            diffButtonEnabled = enabled;
+            const button = document.getElementById("diff_button");
+            if (!button) return;
+            button.disabled = !enabled;
+            button.title = enabled
+                ? "Show what changed since you opened this page (Ctrl+Shift+D)"
+                : "Unavailable while a writing-assistant suggestion is open";
+        }
+
+        function updateDiffButton(state) {
+            const button = document.getElementById("diff_button");
+            if (!button) return;
+            button.textContent = diffOn
+                ? "Hide changes (" + diffChunkCount(state) + ")"
+                : "Show changes";
+            button.setAttribute("aria-pressed", String(diffOn));
+        }
+
+        function setDiff(on) {
+            if (on && !diffButtonEnabled) return;   // keyboard path honors the same gate
+            diffOn = on;
+            cmView.dispatch({
+                effects: diffCompartment.reconfigure(on ? unifiedMergeView({
+                    original: baselineDoc,
+                    mergeControls: true,      // Reject reverts one hunk; history() can't
+                    gutter: true,
+                    highlightChanges: true,
+                    syntaxHighlightDeletions: true,
+                    // collapseUnchanged is deliberately off: this decorates the buffer
+                    // being typed in, so folding untouched regions would collapse the
+                    // document mid-edit.
+                }) : []),
+            });
+            updateDiffButton(cmView.state);
+        }
+
+        const diffButton = document.getElementById("diff_button");
+        if (diffButton) diffButton.addEventListener("click", () => setDiff(!diffOn));
+        updateDiffButton(cmView.state);
+
+        // React to OS theme changes
+        darkQuery.addEventListener("change", () => {
+            cmView.dispatch({
+                effects: themeCompartment.reconfigure(getTheme()),
+            });
+        });
+
+        // Populate hidden input on form submit so the markdown field is POSTed
+        document.querySelector("form[name='edit_document_form']")
+            .addEventListener("submit", () => {
+                document.getElementById("editor-hidden-input").value = cmView.state.doc.toString();
+            });
+
+        cmView.focus();
+    });
+    </script>
+
+{% endblock base_header %}
+
+
+{% block content %}
+
+<div id="document">
+
+    <p id="pagetitle">
+        {% if document_mode == "edit" %}
+        Edit: <a href="/wiki/{{ vault|default('main', true) }}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">{{title}} </a>
+        {% elif document_mode == "create" %}
+        Create: {{title}}
+        {% endif %}
+
+    </p>
+
+    <div id="preview_area"></div>
+
+    <form action="/save/" method="post" name="edit_document_form">
+        <textarea id="editor-initial-content" style="display:none">{{document}}</textarea>
+        <div id="editor-container" style="resize:both; overflow:hidden; height:50vh; min-height:80px; border:1px solid var(--darker);"></div>
+        <input type="hidden" name="markdown" id="editor-hidden-input" value="">
+        <br />
+        <input type="submit" value="Save" />
+        <input type="hidden" name="document_name" value="{{file_path}}">
+        <button type="button" name="preview_button" onclick="editPreview(this)" value="true">Preview</button>
+        <button type="button" name="diff_button" id="diff_button" aria-pressed="false"
+                title="Show what changed since you opened this page (Ctrl+Shift+D)">Show changes</button>
+        {% if document_mode == "edit" %}
+        <button name="delete_button" value="true">Delete</button>
+        <button type="button" name="move_button" onclick="moveDocument(this)"
+                data-vault="{{vault}}" data-rel="{{move_source_rel}}">Move / Rename</button>
+        {% endif %}
+        <br />
+        {% if history_enabled %}
+        <input type="checkbox" name="save_version" id="save_version" value="True" 
+        {% if save_on_edit %} checked {% endif %} > <label for="save_version">Save history</label>
+        {% endif %}
+
+
+        <div id="dropZone">
+            <div class="upload-icon">📁</div>
+            <div class="dropzone-text">
+                <p><strong>Drag & drop files here</strong></p>
+                <p>or click to browse</p>
+            </div>
+        </div>
+        
+        <input type="file" id="fileInput" multiple>
+        
+        <div id="uploadsContainer"></div>
+        <div id="queueInfo" class="queue-info"></div>
+            
+    </form>
+
+</div>
+{% endblock content %}

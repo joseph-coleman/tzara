@@ -1,0 +1,253 @@
+{
+"name": "tzara",
+"services": {
+  "tzaraserver": {
+    "build": ".",
+    #"container_name": "tzara${BUILD:}",
+    "command": "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --reload --workers 4",
+    #"command": "scalene --html --outfile /app/app/wiki/scalene.html uvicorn main:app --host 0.0.0.0  --port ${PORT:-8000} --reload --workers 4",
+    #"command": "pyinstrument -r html -o  /app/app/report.html -- uvicorn main:app --host 0.0.0.0  --port ${PORT:-8000} --reload --workers 4",
+    #"command":  "pyinstrument -r html -o /app/app/report.html -- uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1",
+    #"command":  ["pyinstrument", "-r ", "html", "-o", "/app/app/report.html", "--", "uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1"],
+    # Config is delivered at RUNTIME from .env (not baked into the image): env_file
+    # injects every .env var into the container environment, so config changes take
+    # effect on `up` with no rebuild, and secrets never end up in an image layer.
+    # required:false so a bare `up` with no .env still starts (app falls back to
+    # config.py defaults) instead of erroring on a missing file.
+    "env_file": [{ "path": ".env", "required": false }],
+    "volumes": [
+      "${APP_LOCATION:-./app}:/app/app",
+      "${VAULTS_LOCATION:-./app/vaults}:/app/app/vaults",
+      "${HISTORY_LOCATION:-./app/vault-history}:/app/app/vault-history"
+        ],
+    "networks": ["tzara-net"],
+    "ports":
+      ["${PORT:-8000}:${PORT:-8000}"],
+    # TZ: agent schedules are written in WALL-CLOCK terms ("daily @ 4:30 pm") and
+    # evaluated against naive local time, so the container's idea of local time is
+    # the schedule's timezone. Unset it defaults to UTC, which silently shifts
+    # every schedule by your UTC offset - a "4:30 pm" market digest fired at
+    # 11:30 am Central. Set TZ in .env to your own zone; the image ships tzdata.
+    # EVERY service below takes the same value. TZ is also the zone every
+    # displayed timestamp renders in and the one a jupyter cell's datetime.now()
+    # reports, so a service left out disagrees with the rest of the wiki.
+    "environment":
+      ["PYTHONUNBUFFERED=1", "TZ=${TZ:-UTC}"],
+    "restart": "always",
+    "depends_on": ["jupyterserver", "tzaraworker"]
+  },
+
+  "tzaraworker": {
+    "build": ".",
+    # --workers 1: taskiq defaults to TWO child processes, which duplicated the
+    # file watcher (debounce hid it) and made the second process lose the
+    # agent-API port bind and crash-loop. One process, three async task slots.
+    "command": "taskiq worker src.task_definitions:broker --max-async-tasks 3 --workers 1",
+    # Same runtime config as the server (see note above): the worker reads the
+    # same .env vars (OLLAMA_*, POSTGRES_*, HISTORY_LOCATION, agent settings).
+    "env_file": [{ "path": ".env", "required": false }],
+    "volumes": [
+      "${VAULTS_LOCATION:-./app/vaults}:/app/app/vaults",
+      # The worker commits to git for edits made OUTSIDE the app (the watcher fires
+      # index/move/remove tasks that call _git_version_*), so it also needs the
+      # off-Dropbox history parent mounted as a sibling of vaults.
+      "${HISTORY_LOCATION:-./app/vault-history}:/app/app/vault-history"
+    ],
+    # TZ must match the server's: this is the process that actually EVALUATES
+    # schedules (agent_scheduler runs here), so a mismatch would have the UI
+    # showing one next-due time and the scheduler firing at another.
+    "environment":
+    ["PYTHONUNBUFFERED=1", "TZ=${TZ:-UTC}"],
+    # Dual membership: tzara-net for DB/redis/ollama, agent-net to host the
+    # token-gated agent-API the isolated agent kernel calls back into.
+    "networks": ["tzara-net", "agent-net"],
+    "depends_on": {
+      "redisserver": {
+        "condition": "service_healthy"
+      },
+      "pgserver": {
+        "condition": "service_healthy"
+      },
+      "ollamaserver": {
+        "condition": "service_started"
+      }
+    },
+    "restart": "always",
+    "deploy": {
+      "replicas": 1
+    }
+  },
+
+  "redisserver": {  # runs on port 6379 by default.
+    "image": "redis:alpine",
+    "hostname": "redis",
+    #"ports": ["6379:6379"],
+    "environment": ["TZ=${TZ:-UTC}"],  # log timestamps only; nothing here is zone-sensitive
+    "networks": ["tzara-net"],
+    "restart": "always",
+    "healthcheck": {
+      "test": ["CMD", "redis-cli", "ping"],
+      "interval": "5s",
+      "timeout": "3s",
+      "retries": "5"
+    }
+  },
+
+
+  "pgserver" : {
+    "image": "pgvector/pgvector:pg18",
+    "hostname": "postgres",
+    # only uncomment this if you want to edit DB directly
+    #"ports": ["${POSTGRES_PORT:-5432}:5432"], 
+    "networks": ["tzara-net"],
+    "restart": "unless-stopped",
+    # TZ is safe here only because every timestamp column is TIMESTAMPTZ: an
+    # absolute instant that renders per-session. A naive TIMESTAMP column would
+    # start taking Central-based NOW() values alongside its existing UTC rows,
+    # with nothing in the data to tell the two apart.
+    "environment":[
+      "POSTGRES_DB=${POSTGRES_DB:-tzara}",
+      "POSTGRES_USER=${POSTGRES_USER:-tzara}",
+      "POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}",
+      "TZ=${TZ:-UTC}"
+    ],
+    "volumes":[
+      # Defaults to the `pg_data` named volume (declared below) so a fresh clone
+      # needs no host path. Set POSTGRES_DATA_LOCATION to an absolute path in .env
+      # to bind-mount a host directory instead.
+      "${POSTGRES_DATA_LOCATION:-pg_data}:/var/lib/postgresql",  # for version 18+
+      "./init.sql:/docker-entrypoint-initdb.d/init.sql:ro"
+    ],
+    "healthcheck": {
+      "test": ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tzara} -d ${POSTGRES_DB:-tzara}"],
+      "interval": "5s",
+      "timeout": "5s",
+      "retries": "5",
+      "start_period": "30s"
+    }
+  },
+
+  "jupyterserver": {
+    # This service OWNS the build of the shared jupyter image. The explicit
+    # "image" tag (instead of the default per-service tzara-<service> name)
+    # is what lets jupyterserver-agent reuse the exact same image below, so the
+    # heavy pip install in Dockerfile.jupyter runs ONCE, not once per service.
+    "build": { "context": ".", "dockerfile": "Dockerfile.jupyter" },
+    "image": "tzara-jupyter:latest",
+    "hostname": "jupyter",
+    # Share the vault tree at the SAME absolute path the wiki server uses
+    # (/app/app/vaults) so a kernel can be chdir'd into a page's folder and read
+    # attachments by the same relative name the markdown link uses. Read-write so
+    # cells can save derived artifacts (plots, CSVs) back next to the page.
+    #
+    # Also mount the separated git-history parent (same as server/worker) so git
+    # in a cell can reach a vault's --separate-git-dir. Vault .git files are
+    # gitlinks that resolve outside the work tree; pin both halves explicitly:
+    #   git --git-dir=/app/app/vault-history/{slug} \
+    #       --work-tree=/app/app/vaults/{slug} status
+    "volumes": [
+      "${VAULTS_LOCATION:-./app/vaults}:/app/app/vaults",
+      "${HISTORY_LOCATION:-./app/vault-history}:/app/app/vault-history"
+    ],
+    "networks": ["tzara-net"],
+    #"ports": ["8888:8888"],
+    # Start as root ONLY so the docker-stacks entrypoint can honor GRANT_SUDO:
+    # it writes a passwordless-sudo entry for jovyan, then drops the kernel back
+    # to jovyan (uid 1000) - so cells still run unprivileged and vault artifacts
+    # stay jovyan-owned; only explicit `sudo ...` escalates (e.g. installing git
+    # for git-in-a-cell workflows). Scoped to this interactive service; the
+    # isolated jupyterserver-agent below deliberately does NOT get sudo.
+    "user": "root",
+    # Route through start.sh (the image's default startup wrapper) instead of
+    # invoking jupyter-server directly. start.sh is what reads GRANT_SUDO and
+    # drops privileges: launched as root it grants jovyan passwordless sudo,
+    # then execs jupyter-server AS jovyan. Calling jupyter-server directly (as
+    # the agent service does) bypasses start.sh entirely, so as root it would
+    # refuse to start ("Running as root is not recommended") and crash-loop.
+    "command": "start.sh jupyter-server --no-browser --ServerApp.token='' --ServerApp.password='' --ServerApp.allow_origin='*' --ServerApp.allow_credentials=true --ServerApp.ip='0.0.0.0' --ServerApp.disable_check_xsrf=True",
+    # TZ: a code cell's datetime.now() reports the KERNEL's local time, so
+    # without this a jupyter cell prints a time hours off from the page it sits on.
+    "environment": ["PLOTLY_RENDERER=notebook_connected", "GRANT_SUDO=yes", "TZ=${TZ:-UTC}"],
+    "restart": "always"
+  },
+
+  # The AGENT kernel: where agent-file custom tools execute. Deliberately has
+  # NO vault mount (containment by removal) and is ONLY on agent-net - it can
+  # reach the open internet and the worker's agent-API (port 8555, token-gated)
+  # but has no route to Postgres/Ollama/the browser server. Same image as the
+  # interactive jupyter (compute libs incl. yfinance are already installed).
+  # Shares jupyterserver's image via the identical "image" tag below. Both
+  # carry the same build definition, but Compose deduplicates builds by target
+  # image tag, so the heavy pip install in Dockerfile.jupyter runs ONCE - while
+  # keeping a build fallback so this service never has to pull from a registry
+  # (there is none; the image is local-only). The two containers differ only in
+  # network membership and mounts, not in their software (same compute libs).
+  "jupyterserver-agent": {
+    "build": { "context": ".", "dockerfile": "Dockerfile.jupyter" },
+    "image": "tzara-jupyter:latest",
+    "hostname": "jupyter-agent",
+    "networks": ["agent-net"],
+    "command": "jupyter-server  --no-browser --ServerApp.token='' --ServerApp.password='' --ServerApp.allow_origin='*' --ServerApp.allow_credentials=true --ServerApp.ip='0.0.0.0' --ServerApp.disable_check_xsrf=True",
+    # Secrets for custom tools: add explicit entries here, substituted from
+    # .env at compose time; tool code reads os.environ. Example:
+    #   "MY_API_KEY=${MY_API_KEY}",
+    "environment": ["PLOTLY_RENDERER=notebook_connected", "TZ=${TZ:-UTC}"],
+    "restart": "always"
+  },
+
+  "ollamaserver": {
+    "image": "ollama/ollama:latest",
+    "hostname": "ollama",
+    "networks": ["tzara-net"],
+    # Models default to the `ollama_models` named volume (declared below) so a
+    # fresh clone needs no host path. Set OLLAMA_MODELS to an absolute host path
+    # in .env to reuse an existing Ollama model store.
+    "volumes": ["${OLLAMA_MODELS:-ollama_models}:/root/.ollama/models"],
+    "environment": ["OLLAMA_HOST=0.0.0.0", "TZ=${TZ:-UTC}"],
+    "restart": "always"
+  },
+
+  # First-run model bootstrap: waits for the local Ollama server to answer, pulls
+  # the configured chat + embedding models, then exits (restart:no, so it doesn't
+  # loop). `ollama pull` is idempotent - already-present models are skipped - so
+  # this is safe on every `up`. Disabled by the external-inference overlay (which
+  # sets replicas:0), since there is no local Ollama container to pull into then.
+  "ollama-init": {
+    "image": "ollama/ollama:latest",
+    "networks": ["tzara-net"],
+    "depends_on": {
+      "ollamaserver": { "condition": "service_started" }
+    },
+    "environment": ["OLLAMA_HOST=http://ollama:11434"],
+    # The whole shell script is the THIRD element of the entrypoint list so
+    # Compose passes it to `sh -c` as one argument. (A string `command` gets
+    # word-split into argv, which would hand `sh -c` only the first token.)
+    "entrypoint": ["/bin/sh", "-c", "until ollama list >/dev/null 2>&1; do echo 'waiting for ollama...'; sleep 2; done; ollama pull ${OLLAMA_MODEL:-llama3.2:3b}; ollama pull ${OLLAMA_EMBED_MODEL:-embeddinggemma:300m}; echo 'model bootstrap complete'"],
+    "restart": "no"
+  },
+
+
+},
+
+# Define the custom networks. agent-net carries ONLY the worker and the agent
+# kernel: network membership IS the kernel's internal isolation (it still has
+# outbound internet via the bridge - wanted for pinned-destination tools).
+"networks": {
+  "tzara-net" : {
+      "driver" : "bridge"
+    },
+  "agent-net" : {
+      "driver" : "bridge"
+    }
+},
+
+# Docker-managed named volumes used as the zero-config storage defaults. They are
+# referenced only when POSTGRES_DATA_LOCATION / OLLAMA_MODELS are left at their
+# bare-name defaults (pg_data / ollama_models); setting an absolute host path in
+# .env turns the corresponding mount into a bind mount and leaves these unused.
+"volumes": {
+  "pg_data": {},
+  "ollama_models": {}
+}
+
+}

@@ -1,0 +1,48 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+{% import "_nav_badge.html" as nav_badge %}
+
+<div id="document_footer">
+    <nav class="navbar">
+    <input type="checkbox" id="menu-toggle-footer" class="menu-toggle">
+    <label for="menu-toggle-footer" class="hamburger">&#9776;</label>
+    
+    {% set v = vault|default('main', true) %}
+    <ul class="menu">
+        {% if document_mode == "edit" %}
+        <li><a href="/wiki/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">View</a></li>
+        {% elif document_mode == "view" and not hide_edit_link %}
+        <li><a href="/edit/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">Edit</a></li>
+        {% endif %}
+        {% if has_history %}
+        <li><a href="/history/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}">History</a></li>
+        {% endif %}
+        {% if show_raw %}
+        <li><a href="/raw/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}" download="{{page_name}}.md">Raw</a></li>
+        {% endif %}
+        
+        {# Start page name is per-vault (.tzara/config.json `default_page`); `v` is
+           already in scope, so resolve it here rather than have every route pass it. #}
+        {% set home = vault_default_page(v) %}
+        <li><a href="/wiki/{{v}}/{{home|urlencode}}">{{home|e}}</a></li>
+        <li><a href="/index/{{v}}">Index</a></li>
+        <li><a href="#" onclick="return newCanvas('{{v}}')">Canvas</a></li>
+        
+        <li><a href="/manage/jupyter">Kernels</a></li>
+        {% if has_jupyter %}{% endif %}
+        <li><a href="/manage/ollama" >Models</a></li>
+        <li><a href="/manage/tasks" >Tasks</a></li>
+        <li>{{ nav_badge.link('/manage/monitor', 'Monitor', 'monitor',
+                              'System health - failures needing attention', 'alert') }}</li>
+        <li>{{ nav_badge.link('/agents', 'Agents', 'agents',
+                              'Agent activity - staged proposals awaiting review') }}</li>
+        <li><a href="/editors" title="Editor tools: validity + settings">Editors</a></li>
+        <li><a href="/wiki/{{system_vault}}/help">Help</a></li>
+  </ul>
+  </nav>
+
+</div>

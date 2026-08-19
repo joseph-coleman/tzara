@@ -1,0 +1,3170 @@
+/*
+ * Copyright (C) 2026 Joseph E. Coleman
+ * This file is part of Tzara, licensed under the GNU Affero General
+ * Public License v3.0 or later. See LICENSE.txt.
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+@layer site {
+:root {
+    /* only need to change 4 colors in this one location.
+       Also can mess around with variations of the base colors,
+       they're all here at the top of the style sheet
+    */
+    color-scheme: light dark;
+    --base-color: #ffd05f;
+    /* --base-color: #76a8f7; */
+    --background: #fbf4eb;
+    --foreground: #1c170b;
+    --contrast-color: var(--foreground);
+    /* Lightness uses RELATIVE multipliers (calc(l * N)) not absolute stops, so the
+       ramp scales around ANY theme seed's own lightness - a themeable engine's core
+       promise. (Absolute stops calibrated to amber over-lightened ocean's darker
+       blue into washed sky-blue.) Multipliers are tuned so amber (base L 0.887) lands
+       at its gold values: darker ~0.76, darkest ~0.56. Hue is deliberately NOT rotated
+       (a warm-tuned shift pulled ocean's blue toward cyan in the shared engine); the
+       gold-not-brown result comes from keeping darker LIGHT enough, not from hue. */
+    /* --lightest: oklch(from var(--base-color) calc(l * 1.09) calc(c * 0.30) h);
+    --lighter: oklch(from var(--base-color) calc(l * 1.075) calc(c * 0.40) h); */
+    --lightest: oklch(from var(--base-color) calc(l + 0.1) calc(c - 0.1) h);
+    --lighter: oklch(from var(--base-color) calc(l + 0.1) calc(c - 0.05) h);
+    /* --darker: oklch(from var(--base-color) calc(l * 0.855) calc(c * 1.12) h);
+    --darkest: oklch(from var(--base-color) calc(l * 0.63) calc(c * 0.95) h); */
+    --darker: oklch(from var(--base-color) calc(l - 0.1) calc(c * 1.3) h);
+    --darkest: oklch(from var(--base-color) calc(l - 0.2) calc(c * 1.6) h);
+    --complement: oklch(from var(--base-color) l c calc(h + 180));
+    --base-link-color: #1c16d3;
+    --link-color: var(--base-link-color);
+    --link-highlight: oklch(from var(--base-link-color) 0.50 c h);
+    --link-dark: oklch(from var(--base-link-color) 0.30 c h);
+    --link-visited: oklch(from var(--base-link-color) 0.45 calc(c * 0.9) calc(h + 60));
+    --bg-color: var(--background);
+    --fg-color: var(--foreground);
+
+    /* Table tints. Mixed from the theme seed TOWARD --bg-color, so they follow
+       the page background and stay muted in both light and dark mode without a
+       separate dark-mode block: --bg-color flips, color-mix re-resolves, and
+       mixing toward the (near-neutral) page color drops the seed's chroma so we
+       never get the raw saturated --base-color stripes. The percent IS the
+       intensity ladder: alt-row barely-there, header a touch stronger, hover the
+       strongest so the cue reads on odd AND even rows alike. */
+    --table-row-alt-bg:    color-mix(in oklab, var(--base-color)  6%, var(--bg-color));
+    --table-header-bg:     color-mix(in oklab, var(--base-color) 15%, var(--bg-color));
+    --table-hover-bg:      color-mix(in oklab, var(--base-color) 24%, var(--bg-color));
+    --table-border:        color-mix(in oklab, var(--base-color) 28%, var(--bg-color));
+    --table-border-strong: color-mix(in oklab, var(--base-color) 52%, var(--bg-color));
+
+    /*these are reference colors for callouts*/
+    --red: #ff0000;
+    --yellow: #ffff00;
+    --green: #00ff00;
+    --cyan: #00ffff;
+    --blue: #0000ff;
+    --magenta: #ff00ff;
+
+    /* Six evenly-spaced spokes on the OKLCH hue circle. Chroma is pinned to a
+       single in-gamut value (not derived) so the conic-gradient rainbow reads as
+       one coherent family instead of a vivid yellow next to a washed-out blue. */
+    --base-60 : oklch(from var(--base-color) l 0.12 calc(h +  60));
+    --base-120: oklch(from var(--base-color) l 0.12 calc(h + 120));
+    --base-180: oklch(from var(--base-color) l 0.12 calc(h + 180));
+    --base-240: oklch(from var(--base-color) l 0.12 calc(h + 240));
+    --base-300: oklch(from var(--base-color) l 0.12 calc(h + 300));
+
+    --base-60-darker:  oklch(from var(--base-color) 0.50 0.13 calc(h +  60));
+    --base-120-darker: oklch(from var(--base-color) 0.50 0.13 calc(h + 120));
+    --base-180-darker: oklch(from var(--base-color) 0.50 0.13 calc(h + 180));
+    --base-240-darker: oklch(from var(--base-color) 0.50 0.13 calc(h + 240));
+    --base-300-darker: oklch(from var(--base-color) 0.50 0.13 calc(h + 300));
+
+    --base-60-lighter:  oklch(from var(--base-color) 0.92 0.07 calc(h +  60));
+    --base-120-lighter: oklch(from var(--base-color) 0.92 0.07 calc(h + 120));
+    --base-180-lighter: oklch(from var(--base-color) 0.92 0.07 calc(h + 180));
+    --base-240-lighter: oklch(from var(--base-color) 0.92 0.07 calc(h + 240));
+    --base-300-lighter: oklch(from var(--base-color) 0.92 0.07 calc(h + 300));
+
+    /* Semantic colors. */
+    --color-success:    light-dark(oklch(from var(--base-color) 0.50 0.14 calc(h + 55)),  oklch(from var(--base-color) 0.72 0.14 calc(h + 55)));
+    --color-success-bg: light-dark(oklch(from var(--base-color) 0.93 0.06 calc(h + 55)),  oklch(from var(--base-color) 0.30 0.05 calc(h + 55)));
+    --color-danger:     light-dark(oklch(from var(--base-color) 0.50 0.16 calc(h - 65)),  oklch(from var(--base-color) 0.70 0.16 calc(h - 65)));
+    --color-danger-bg:  light-dark(oklch(from var(--base-color) 0.93 0.06 calc(h - 65)),  oklch(from var(--base-color) 0.30 0.05 calc(h - 65)));
+    --color-info:       light-dark(oklch(from var(--base-color) 0.50 0.13 calc(h + 160)), oklch(from var(--base-color) 0.72 0.13 calc(h + 160)));
+    --color-info-bg:    light-dark(oklch(from var(--base-color) 0.93 0.06 calc(h + 160)), oklch(from var(--base-color) 0.30 0.05 calc(h + 160)));
+    --color-warning:    light-dark(oklch(from var(--base-color) 0.55 0.14 calc(h - 20)),  oklch(from var(--base-color) 0.75 0.14 calc(h - 20)));
+    --color-warning-bg: light-dark(oklch(from var(--base-color) 0.93 0.08 calc(h - 20)),  oklch(from var(--base-color) 0.30 0.06 calc(h - 20)));
+
+    /* Typography scale */
+    --text-xxs: 0.65em;
+    --text-xs: 0.75em;
+    --text-sm: 0.85em;
+    --text-smd: 0.92em;
+    --text-md: 1em;
+    --text-lg: 1.2em;
+    --text-xl: 1.5em;
+    --text-xxl: 1.7em;
+
+    /* Spacing scale */
+    --space-xxs: 0.15em;
+    --space-xs: 0.25em;
+    --space-sm: 0.5em;
+    --space-md: 0.75em;
+    --space-lg: 1em;
+    --space-xl: 1.5em;
+    --space-xxl: 2.5em;
+
+    /* Radius scale */
+    --radius-sm: 4px;     /* form controls */
+    --radius-md: 8px;     /* cards, bubbles */
+    --radius-lg: 1em;     /* callouts, tag pills */
+    --radius-pill: 2em;   /* toggles */
+}
+
+@property --rotation {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes rotate {
+  to {
+    --rotation: 360deg;
+  }
+}
+
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    interpolate-size: allow-keywords;
+  }
+}
+
+
+/******************************************************/
+@media (prefers-color-scheme: light) {
+    html {
+        background-color: var(--bg-color);
+        color: var(--fg-color);
+    }
+
+    /*these colors look OK on both dark and light mode, so gonna keep them for now*/
+    .callout[data-callout="abstract"],
+    .callout[data-callout="summary"],
+    .callout[data-callout="tldr"]    {
+        --callout-color : oklch(from var(--cyan) 0.55 0.10 h);
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+        /* --callout-color: var(--darkest);
+        --callout-bg-color: var(--darkest); */
+    }
+    .callout[data-callout="info"]  { 
+        --callout-color : oklch(from var(--blue) 0.55 0.13 h); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+        /* --callout-color: var(--darker);
+        --callout-bg-color: var(--darker); */
+    }
+    .callout[data-callout="todo"]  {
+        --callout-color : oklch(from var(--blue) 0.55 0.13 h);  
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h);
+        /* --callout-color: var(--base-color);
+         --callout-bg-color: var(--base-color); */
+    }
+    .callout[data-callout="tip"],
+    .callout[data-callout="hint"] ,
+    .callout[data-callout="important"]   { 
+        --callout-color : oklch(from var(--cyan) 0.55 0.10 h); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+        /* --callout-color: var(--lighter);
+        --callout-bg-color: var(--lighter); */
+    }
+    .callout[data-callout="success"],
+    .callout[data-callout="check"] ,
+    .callout[data-callout="done"]   { 
+        --callout-color : oklch(from var(--green) 0.55 0.14 h); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+        /* --callout-color: var(--lightest);
+         --callout-bg-color: var(--lightest); */
+    }
+    .callout[data-callout="question"],
+    .callout[data-callout="help"] ,
+    .callout[data-callout="faq"]   { 
+        --callout-color : oklch(from var(--yellow) 0.58 0.13 calc(h - 25)); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+    }
+    .callout[data-callout="warning"],
+    .callout[data-callout="caution"] ,
+    .callout[data-callout="attention"]   { 
+        --callout-color : oklch(from var(--yellow) 0.58 0.13 calc(h - 25)); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+    }
+    .callout[data-callout="failure"],
+    .callout[data-callout="fail"] ,
+    .callout[data-callout="missing"]   { 
+        --callout-color : oklch(from var(--red) 0.55 0.16 h); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+    }
+    .callout[data-callout="danger"],
+    .callout[data-callout="error"]   { 
+        --callout-color : oklch(from var(--red) 0.55 0.16 h); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+    }
+    .callout[data-callout="bug"]  { 
+        --callout-color : oklch(from var(--red) 0.55 0.16 h); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+    }
+    .callout[data-callout="example"]  { 
+        --callout-color : oklch(from var(--magenta) 0.55 0.15 h);
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+    }
+    .callout[data-callout="quote"]  { 
+        --callout-color : oklch(from var(--base-color) 0.52 0 h); 
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.95 0.045 h); 
+    }
+
+    .callout {
+        
+        border-color: var(--callout-color, #888);
+        background: var(--callout-bg-color, var(--lightest));
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+
+
+
+
+
+    /* we maintain the same name gradient as in the light color scheme,
+       darkest, darker, base-color, lighter, lightest,
+       but the colors are inverted.  So darkest is actually the
+       lightest color, and lightest is the darkeset. 
+       This means we don't have to change any css code. 
+       */
+    :root {
+        /* --darkest: oklch(from var(--base-color) calc(l * 1.08) calc(c * 0.40) h);
+        --darker: oklch(from var(--base-color) calc(l * 0.89) c h);
+        --lighter: oklch(from var(--base-color) calc(l * 0.68) calc(c * 0.85) h);
+        --lightest: oklch(from var(--base-color) calc(l * 0.34) calc(c * 0.35) h);
+
+     */
+
+    --darkest:  oklch(from var(--base-color) calc(l + 0.0) calc(c - 0.1) h);
+    --darker:   oklch(from var(--base-color) calc(l + 0.0) calc(c - 0.05) h);
+    --lighter:  oklch(from var(--base-color) calc(l - 0.3) calc(c - 0.0) h);
+    --lightest: oklch(from var(--base-color) calc(l - 0.4) calc(c - 0.0) h);
+
+        --link-color: oklch(from var(--base-link-color) 0.72 calc(c * 0.9) h);
+        --link-dark: oklch(from var(--base-link-color) 0.55 c h);
+        --link-highlight: oklch(from var(--base-link-color) 0.80 calc(c * 0.9) h);
+        --link-visited: oklch(from var(--base-link-color) 0.70 calc(c * 0.9) calc(h + 60));
+
+         --base-60-lighter: oklch(from var(--base-color) 0.40 0.09 calc(h +  60));
+        --base-120-lighter: oklch(from var(--base-color) 0.40 0.09 calc(h + 120));
+        --base-180-lighter: oklch(from var(--base-color) 0.40 0.09 calc(h + 180));
+        --base-240-lighter: oklch(from var(--base-color) 0.40 0.09 calc(h + 240));
+        --base-300-lighter: oklch(from var(--base-color) 0.40 0.09 calc(h + 300));
+
+         --base-60-darker: oklch(from var(--base-color) 0.72 0.13 calc(h +  60));
+        --base-120-darker: oklch(from var(--base-color) 0.72 0.13 calc(h + 120));
+        --base-180-darker: oklch(from var(--base-color) 0.72 0.13 calc(h + 180));
+        --base-240-darker: oklch(from var(--base-color) 0.72 0.13 calc(h + 240));
+        --base-300-darker: oklch(from var(--base-color) 0.72 0.13 calc(h + 300));
+
+        --fg-color: var(--background);
+        --bg-color: var(--foreground);
+
+        --contrast-color: var(--foreground);
+    }
+
+    html {
+        background-color: var(--bg-color);
+        color: var(--fg-color);
+    }
+
+    .callout[data-callout="abstract"], .callout[data-callout="summary"], .callout[data-callout="tldr"] {
+         --callout-color : oklch(from var(--cyan) 0.72 0.09 h);
+         /* --callout-color: var(--darkest); */
+        }
+    .callout[data-callout="info"]  {
+         --callout-color : oklch(from var(--blue) 0.70 0.13 h); 
+         /* --callout-color: var(--darker); */
+        }
+    .callout[data-callout="todo"]  {
+         --callout-color : oklch(from var(--blue) 0.70 0.13 h); 
+         /* --callout-color: var(--base-color); */
+        }
+    .callout[data-callout="tip"], .callout[data-callout="hint"], .callout[data-callout="important"] {
+         --callout-color : oklch(from var(--cyan) 0.72 0.09 h); 
+         /* --callout-color: var(--lighter); */
+        }
+    .callout[data-callout="success"], .callout[data-callout="check"], .callout[data-callout="done"] {
+         --callout-color : oklch(from var(--green) 0.72 0.14 h); 
+         /* --callout-color: var(--lightest); */
+        }
+    .callout[data-callout="question"], .callout[data-callout="help"], .callout[data-callout="faq"] {
+         --callout-color : oklch(from var(--yellow) 0.75 0.13 calc(h - 25)); 
+        }
+    .callout[data-callout="warning"], .callout[data-callout="caution"], .callout[data-callout="attention"] {
+         --callout-color : oklch(from var(--yellow) 0.75 0.13 calc(h - 25)); 
+        }
+    .callout[data-callout="failure"], .callout[data-callout="fail"] , .callout[data-callout="missing"] {
+         --callout-color : oklch(from var(--red) 0.68 0.15 h); 
+        }
+    .callout[data-callout="danger"], .callout[data-callout="error"] {
+         --callout-color : oklch(from var(--red) 0.68 0.15 h); 
+        }
+    .callout[data-callout="bug"] {
+         --callout-color : oklch(from var(--red) 0.68 0.15 h); 
+        }
+    .callout[data-callout="example"] {
+         --callout-color : oklch(from var(--magenta) 0.70 0.14 h); 
+        }
+    .callout[data-callout="quote"] {
+         --callout-color : oklch(from #888888 0.68 0 h); 
+        }
+
+    .callout {
+        --callout-bg-color : oklch(from var(--callout-color, #888) 0.28 0.045 h);
+        border-color: var(--callout-color, #444);
+        background: var(--callout-bg-color, var(--lightest));
+        /* background: var(--callout-color, var(--lightest)); */
+    }
+
+
+    pre.mermaid {
+    filter: invert(1) hue-rotate(180deg);
+    } 
+
+}
+
+body {
+    /*padding: 1em;*/
+    font-size: 13.1415926pt;
+    /* System Fonts with system-ui */
+    /* font-family: system-ui, "Segoe UI", Roboto, Helvetica, Verdana, Tahoma, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; */
+    font-family: Helvetica, Arial, system-ui, "Segoe UI", Roboto, sans-serif, Verdana, Tahoma, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    /* font-family: Roboto; */ /* domo arigato */
+}
+
+body,
+div,
+span,
+p,
+a,
+img,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+input,
+ul,
+ol,
+li,
+blockquote {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    outline: 0;
+}
+
+#document_container img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+}
+
+/* Image alignment helpers -- attach with attr_list, e.g.
+   ![alt](image.png){: .img-center }
+   An inline <img> must become block-level before margins can center it. */
+img.img-center {
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+img.img-right {
+    display: block;
+    margin-left: auto;
+    margin-right: 0;
+}
+
+/* Float pulls the image out of flow so following text wraps beside it. */
+img.img-float-right {
+    float: right;
+    margin: 0 0 var(--space-lg) var(--space-lg);
+}
+
+img.img-float-left {
+    float: left;
+    margin: 0 var(--space-lg) var(--space-lg) 0;
+}
+
+
+/*
+ul,
+ol,
+li,
+blockquote,*/
+
+#search-page,
+#document {
+
+    & #editor-container {
+        background: var(--background);
+    }
+
+    & ul,
+    & ol {
+        padding-left: 1em;
+    }
+
+    & p {
+        margin-bottom: 0.5em;
+        margin-top: 0.5em;
+    }
+
+    /* I really like the visual of indented text paragraphs,
+    but the markdown library's excessive use of p tags
+    inadvertantly results in indents in strange locations */
+    & p:not([class]):not([id]) {
+        margin-bottom: 0.4em;   
+        margin-top:0.3em;
+        text-indent: 1em;
+    }
+
+    /* & p:not([class]):not([id]) + p:not([class]):not([id]) {
+        text-indent: 0.5em;
+    } */
+
+
+    & .cm-panels button{
+        color: var(--contrast-color);
+        background-image: none;
+        padding: var(--space-xs);
+        font-size: var(--text-sm);
+    }
+
+    /* Primary button (default for <button> and submit inputs).
+       Override with .btn-ghost (transparent), .btn-sm / .btn-lg (sizing). */
+    & input[type="submit"],
+    & button {
+        color: var(--contrast-color);
+        padding: var(--space-sm) var(--space-lg);
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font-size: var(--text-md);
+    }
+
+    /*& .jupyter-cell [aria-pressed="false"], */
+    & input[type="submit"],
+    & button {
+        background-color: var(--base-color);
+        border: 2px solid var(--darker);
+        border-style: solid;
+    }
+
+    & input[type="submit"]:focus,
+    & input[type="submit"]:focus-visible,
+    & button:focus,
+    & button:focus-visible {
+        background-color: var(--base-180-lighter);
+        border: 2px solid var(--base-180-darker);
+        border-style: solid;
+    }
+
+    /* Size modifiers - apply on top of primary or ghost. */
+    & .btn-sm {
+        padding: var(--space-xs) var(--space-sm);
+        font-size: var(--text-sm);
+    }
+    & .btn-lg {
+        padding: var(--space-sm) var(--space-lg);
+        font-size: var(--text-lg);
+    }
+
+    /* Ghost variant - transparent background, retains the same border. */
+    & .btn-ghost {
+        background-color: transparent;
+        border: 2px solid var(--darker);
+    }
+    & .btn-ghost:hover:not(:disabled) {
+        background-color: var(--lightest);
+    }
+
+    /* Chat send button: large icon, no extra padding beyond the size modifier. */
+    & button#chat_send_btn {
+        padding: var(--space-xs);
+        font-size: var(--text-xl);
+    }
+
+    & .jupyter-cell [aria-pressed="false"], 
+    & input[type="submit"]:hover,
+    & button:hover {
+        background-color: var(--lighter);
+        border: 2px solid var(--darker);
+        border-style: outset;
+    }
+
+    & .jupyter-cell [aria-pressed="true"], 
+    & input[type="submit"]:active,
+    & button:active {
+        background-color: var(--darker);
+        border: 2px solid var(--darker);
+        border-style: inset;
+    }
+
+
+    & input[type="submit"]:disabled,
+    & button:disabled {
+        background-color: var(--lightest);
+        border: 2px solid var(--base-color);
+        cursor: not-allowed; 
+        opacity: 0.6; 
+    }
+
+    & a {
+        text-decoration: underline;
+    }
+
+    & #pagetitle a {
+        text-decoration: none;
+    }
+
+}
+
+
+/* Admonition HTML (from `!!! note` MkDocs Material syntax) is reshaped
+   into Obsidian callout HTML by AdmonitionNormalizerTreeProcessor in
+   markdown_extensions.py, so it picks up the .callout / [data-callout]
+   styles below - no separate admonition CSS needed. */
+
+.codehilite {
+    overflow: auto;
+}
+
+
+/*ul,li,ol{list-style:none;}*/
+a {
+    outline: none;
+    text-decoration: none;
+    color: var(--link-color);
+}
+
+a:hover {
+    color: var(--link-highlight);
+    text-decoration: underline;
+}
+
+a:visited {
+    color: var(--link-visited);
+}
+
+a:active {
+    color: var(--link-dark);
+}
+/**************************************************/
+/*Obsidian style callouts, essentially admonitions*/
+/**************************************************/
+/* .callout {
+  border-left: 4px solid #888;
+  padding: 0.5em 1em;
+  margin: 1em 0;
+  background: #f9f9f9;
+} */
+
+
+/*
+<div class="callout callout-info" data-callout="info">
+    <div class="callout-title">
+        <div class="callout-title-text">Callout one</div>
+    </div>
+    <div class="callout-content">
+        <p><br>
+        This is not title text</p>
+    </div>
+</div>
+
+<details class="callout callout-warning" data-callout="warning">
+    <summary class="callout-title">
+        <div class="callout-title-text">Collapsed</div>
+    </summary>
+    <div class="callout-content">
+        <p><br>
+        And this is also not title text.</p>
+    </div>
+</details>
+
+<details class="callout callout-abstract" data-callout="abstract" open="">
+    <summary class="callout-title">
+        <div class="callout-title-text">Expanded</div>
+    </summary>
+    <div class="callout-content">
+        <p><br>
+        And this is also not title text.</p>
+    </div>
+</details>
+
+*/
+
+.callout {
+
+  border-style: solid;
+  border-width: var(--space-xs);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md) var(--space-lg);
+  margin: var(--space-lg) 0;
+}
+
+/* 
+    --magenta: #ff00ff;
+    --base-60 : oklch(from var(--base-color) l 0.12 calc(h + 60)); */
+
+
+.callout[data-callout="abstract"] .callout-title-text::before,
+.callout[data-callout="summary"] .callout-title-text::before,
+.callout[data-callout="tldr"]  .callout-title-text::before {content:"📋";}
+.callout[data-callout="info"]  .callout-title-text::before {content:"ℹ️";}
+.callout[data-callout="todo"]  .callout-title-text::before {content:"☑️";}
+.callout[data-callout="tip"]  .callout-title-text::before,
+.callout[data-callout="hint"]  .callout-title-text::before ,
+.callout[data-callout="important"]  .callout-title-text::before  {content:"👍";}
+.callout[data-callout="success"]  .callout-title-text::before,
+.callout[data-callout="check"]  .callout-title-text::before ,
+.callout[data-callout="done"]  .callout-title-text::before  {content:"✔️";}
+.callout[data-callout="question"]  .callout-title-text::before,
+.callout[data-callout="help"]  .callout-title-text::before ,
+.callout[data-callout="faq"]  .callout-title-text::before  {content:"❔";}
+.callout[data-callout="warning"]  .callout-title-text::before,
+.callout[data-callout="caution"]  .callout-title-text::before ,
+.callout[data-callout="attention"]  .callout-title-text::before  {content:"⚠️";}
+.callout[data-callout="failure"]  .callout-title-text::before,
+.callout[data-callout="fail"]  .callout-title-text::before ,
+.callout[data-callout="missing"]  .callout-title-text::before  {content:"❌";}
+.callout[data-callout="danger"]  .callout-title-text::before,
+.callout[data-callout="error"]  .callout-title-text::before  {content:"⚡";}
+.callout[data-callout="bug"]  .callout-title-text::before {content:"🐛";}
+.callout[data-callout="example"]  .callout-title-text::before {content:"📃";}
+.callout[data-callout="quote"]  .callout-title-text::before {content:"“„"; font-size: larger;}
+
+
+
+
+.callout-title {
+  font-weight: bold;
+  margin-bottom: 0.25em;
+}
+
+.callout  .callout-title-text::before { filter: drop-shadow(0 0 1px var(--fg-color));} 
+
+
+details.callout > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+details.callout > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.callout[open] > summary {
+  margin-bottom: 0.5em;
+}
+
+
+details.callout  .callout-title-text::after {
+  content: "⬅️";
+  float: right;
+  transform: rotate(0deg);
+  transition: transform 0.3s ease-in-out;
+}
+
+details.callout[open]  .callout-title-text::after {
+  transform: rotate(-90deg);
+}
+
+/********* callouts ^^^^^^^ *******/
+/**************************************************/
+/**************************************************/
+
+
+/* The favicon is absolutely positioned (not floated) so the header collapses
+   to its content height in every layout - block OR flex item. A flex item
+   establishes a block formatting context that would otherwise contain a float
+   and inflate the header to the 128px favicon height. padding-right reserves
+   the horizontal space the old `align="right"` float used to hold, so the
+   title and navbar menu don't slide underneath the favicon. */
+#document_header {
+    position: relative;
+    padding-right: 136px; /* 128px favicon + 8px gap */
+}
+#document_header img {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width:128px;
+    height:128px;
+    transition: width 0.3s ease, height 0.3s ease;
+}
+
+#document_header,
+#document_footer {
+    background-color: var(--darker);
+    color: light-dark(var(--fg-color), var(--bg-color));
+    /* color: light-dark(lime, magenta); */
+
+    & a {
+        text-decoration: underline;
+        font-weight: bolder;
+        color:var(--link-dark);
+    }
+
+    & a:hover {
+        text-decoration: dotted;
+    }
+
+    & .roundbox {
+        position: relative;
+        padding: 0px;
+        z-index: 1;
+        text-decoration:none;
+        border-radius: 1em;
+
+        &:before {
+            content: '';
+            position: absolute;
+            top: -1px;
+            left: -1px;
+            right: -1px;
+            bottom: -2px;
+            opacity: 0.6;
+            /*background: linear-gradient(45deg, rgb(0,143,104), rgb(250,224,66)); */
+            background: conic-gradient(from var(--rotation), var(--base-color), var(--base-60),var(--base-120),var(--base-180), var(--base-240), var(--base-300), var(--base-color)  );
+            z-index: -1;
+            border-radius: 1em; /* Adjust according to the box's border-radius */
+            animation: rotate 5s linear infinite;
+            filter:blur(2px);
+        }
+
+        &:after {
+            content: '';
+            position: absolute;
+            top: -5px;
+            left: -5px;
+            right: -5px;
+            bottom: -5px;
+            margin:5px;
+            background-color: var(--darker);
+            color: light-dark(var(--fg-color), var(--bg-color));
+            z-index: -1;
+            border-radius: 1em;
+        }
+    
+        &:hover { 
+            &:before {
+                opacity:1;
+                animation-play-state: paused;
+                filter:blur(0px);
+            }
+        }
+    }
+
+
+        /* Basic Reset & Layout */
+    & .navbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    /* padding: 1rem; */
+    /* background: #333; */
+    /* color: white; */
+    }
+
+    & .menu {
+    display: flex;
+    list-style: none;
+    }
+
+    & .menu li a {
+    /* color: white; */
+    text-decoration: none;
+    /* padding: 0 1rem; */    
+    padding: 0 0.5em; 
+    /* border: 1px solid var(--darkest); */
+    background-color: var(--darker);
+    color: light-dark(var(--fg-color), var(--bg-color));
+    }
+
+    & .menu li a:hover {
+        
+        background-color: var(--lighter);
+    }
+
+    /* Hide the checkbox and hamburger by default */
+    & .menu-toggle, & .hamburger {
+    display: none;
+    }
+
+
+
+
+    & .search-item {
+        display: flex;
+        align-items: center;
+    }
+
+    & .search-form {
+        display: flex;
+        align-items: center;
+        gap: 0.25em;
+    }
+
+    & .search-input {
+        padding: 0.15em var(--space-xs);
+        font-size: var(--text-sm);
+        border: 1px solid var(--darker);
+        border-radius: var(--radius-sm);
+        background-color: var(--background);
+        color: var(--foreground);
+        width: 10em;
+    }
+
+    /* .search-button intentionally lighter than primary - sits inside the
+       navbar where the strong base-color of the primary button would clash. */
+    & .search-button {
+        padding: 0.15em var(--space-sm);
+        font-size: var(--text-sm);
+        /* font-weight matches the bolder .menu link items so "Go" reads as a
+           peer of the nav, not lighter inline text. */
+        font-weight: bolder;
+        border: 1px solid var(--darker);
+        border-radius: var(--radius-sm);
+        background-color: var(--darker);
+        color: light-dark(var(--fg-color), var(--bg-color));
+        cursor: pointer;
+    }
+
+    & .search-button:hover {
+        background-color: var(--lighter);
+    }
+
+    /* Mobile Styling (Media Query) */
+    @media (max-width:816px) {
+        & .navbar {
+            font-size: 120%;
+        }
+
+        & .hamburger {
+            /* Show hamburger icon */
+            display: block; 
+            font-size: 2em;
+            cursor: pointer;
+            z-index: 10;
+        }
+
+        & .menu {
+            /* Hide menu links */
+            /* display: flex;  */
+            display: none;
+            flex-direction: column;
+            position: absolute;
+            top: 60px;
+            left: 0;
+            width: 100%;
+            /* background: #444; */
+                /* background-color: var(--darker); */
+               color: light-dark(var(--fg-color), var(--bg-color));
+
+            background: rgb(from var(--darker) r g b / 0.2);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px); /* For Safari support */
+       
+            box-shadow: 0 4px 10px  rgb(from var(--darkest) r g b / 0.9);
+            
+            /* transform: translateY(-150%); 
+            transition: transform 0.4s ease-in-out;
+            z-index: 5; */
+        }
+
+        /* The Magic: If checkbox is checked, show the menu */
+        & .menu-toggle:checked ~ .menu {
+            display: flex;
+            /* transform: translateY(0); */
+        }
+
+        & .menu li {
+            text-align: center;
+            padding: 1rem 0;
+            /* border-top: 1px solid #555; */
+        }
+
+        & .search-form {
+            width: 100%;
+            justify-content: center;
+        }
+
+        & .search-input {
+            width: 60%;
+        }
+
+    }
+
+}
+
+
+#document_footer {
+    margin-top: 5em;
+    /* Positioning context so the footer's hamburger dropdown anchors to the
+       footer itself rather than bubbling up to the viewport. */
+    position: relative;
+}
+
+/* The footer sits at the bottom of the page, so its hamburger menu opens
+   upward instead of dropping below (and off-screen in the fullwidth layout). */
+@media (max-width:816px) {
+    #document_footer .menu {
+        top: auto;
+        bottom: 60px;
+    }
+}
+
+
+#toc {
+    border: 0px;
+    width: calc(0.5 * calc(99% - min(80%, 800px)));
+    float: left;
+    clear: both;
+    padding-left: 1px;
+    padding-bottom: 5em;
+    opacity: 0.05;
+    filter:blur(0.1em);
+    /* transition-property: opacity filter;
+    transition: 1s, 5s;
+    transition-timing-function: ease; */
+    transition: opacity 1s ease 15s, filter 2s ease 14s;
+    /* transition-delay: 15s; */
+
+    position: sticky;
+    top: 0;
+    max-height: 100vh;
+    overflow-y: auto;
+
+    & ul,
+    & ol {
+        padding-left: 0.3em;
+        border-left: 1px solid var(--base-color);
+    }
+
+    & ul,
+    & li,
+    & ol {
+        list-style: none;
+    }
+}
+
+#toc:hover {
+    opacity: 1.0;
+    filter:blur(0.0);
+    transition-property: opacity filter;
+    transition: 0.25s;
+    transition-timing-function: ease-out;
+}
+
+.sidebar-tags {
+    margin-top: 1em;
+    padding-top: 0.5em;
+    border-top: 1px solid var(--lighter);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3em;
+}
+
+.sidebar-tag {
+    display: inline-block;
+    font-size: var(--text-xs);
+    padding: 0.15em 0.5em;
+    border-radius: 1em;
+    background-color: var(--lightest);
+    border: 1px solid var(--lighter);
+    color: var(--darkest);
+    white-space: nowrap;
+}
+.sidebar-tags-label {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--darker);
+    margin-bottom: 0.3em;
+}
+
+
+
+#document {
+    margin: auto;
+    width: min(80%, 800px);
+    padding: 3% min(15%, 250px) 15% min(15%, 250px);
+    padding: 5px;
+
+    & #pagetitle {
+        font-size: 300%;
+        text-align: center;
+        border-bottom: 1px solid var(--darker);
+        /*filter: drop-shadow(0 5px 5px var(--darker));*/
+        box-shadow: 0px 10px 10px -10px var(--darker);
+        margin-bottom: 1em;
+    }
+
+    & #pagetitle a {
+        filter: none;
+    }
+
+    & h1 {
+        color: var(--darkest);
+        /* color: var(--lightest);
+        background-color: var(--darker);
+        margin-bottom: 0.5em; */
+        margin-top: 1.7em;
+        border-bottom: 2px solid var(--base-color);
+        margin-bottom: 0.5em;
+    }
+
+    & h2 {
+        color: var(--darker);
+        /* color: var(--lighter);
+        background-color: var(--darker);
+        margin-bottom: 0.25em; */
+        margin-top: 1.4em;
+        border-bottom: 2px solid var(--lighter);
+        margin-bottom: 0.2em;
+    }
+
+    & h3,
+    & h4 {
+        color: var(--darker);
+        margin-top: 0.8em;
+        margin-bottom: 0.1em;
+
+    }
+
+    & h5 {
+        color: var(--darkest);
+        margin-top: 0.05em;
+        margin-bottom: 0.05em;
+    }
+
+
+    & hr {
+        border:none;
+        height: 20px;
+        width: 90%;
+        height: 11px;
+        margin-top: 0;
+        border-bottom: 1px solid var(--darker);
+        box-shadow: 0 5px 10px -5px var(--darker);
+        margin: 0px auto 50px; 
+    }
+
+    & blockquote {
+        border-left: 2px solid light-dark(var(--darker), var(--lighter));
+        padding-top: 1em;
+        padding-left: 1em;
+        padding-bottom: 1em;
+    }
+
+    /* ---- Definition lists ----------------------------------------------
+       <dl><dt>term</dt><dd>definition</dd></dl>. The term gets an amber
+       tick + accent color against a faint guide rail so multi-term lists
+       read as a glossary rather than plain indented text. Dark mode is
+       handled for free by the light-dark() token pairs. */
+    & dl {
+        margin: var(--space-lg) 0;
+        padding-left: var(--space-lg);
+        border-left: 2px solid light-dark(var(--lightest), var(--darkest));
+    }
+
+    & dt {
+        position: relative;
+        margin-top: var(--space-lg);
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: light-dark(var(--darker), var(--lighter));
+    }
+
+    & dt:first-child {
+        margin-top: 0;
+    }
+
+    /* amber tick sitting on the guide rail, aligned to the term baseline */
+    & dt::before {
+        content: "";
+        position: absolute;
+        left: calc(-1 * var(--space-lg) - 1px);
+        top: 0.2em;
+        bottom: 0.2em;
+        width: 3px;
+        border-radius: var(--radius-pill);
+        background: var(--base-color);
+    }
+
+    & dd {
+        margin: var(--space-xs) 0 0 var(--space-md);
+        padding: var(--space-xs) var(--space-sm);
+        border-radius: var(--radius-sm);
+        color: rgb(from var(--fg-color) r g b / 0.88);
+        transition: background-color 0.15s ease;
+    }
+
+    /* last definition of a pair carries the breathing room to the next term */
+    & dd:last-of-type {
+        margin-bottom: var(--space-sm);
+    }
+
+    & dd:hover {
+        background: rgb(from var(--base-color) r g b / 0.12);
+    }
+
+
+    & table:not(.codehilitetable),
+    & table.dataframe {
+        border-collapse: collapse;
+        margin: 1em 0;
+        width: auto;
+    }
+
+    /* Header: a slightly stronger seed-tint than the body plus a solid rule to
+       anchor it against the first data row. (The old rule had a stray trailing
+       comma before the brace, so it was invalid and headers went unstyled.) */
+    & table:not(.codehilitetable) thead th,
+    & table.dataframe thead th {
+        background-color: var(--table-header-bg);
+        border-bottom: 2px solid var(--table-border-strong);
+    }
+
+    /* Subtle zebra: only even rows carry a faint tint; odd rows keep the page
+       background. Scoped to tbody so the header and code line-number tables are
+       untouched (the old `table tr` rule leaked into .codehilitetable). */
+    & table:not(.codehilitetable) tbody tr:nth-child(even),
+    & table.dataframe tbody tr:nth-child(even) {
+        background-color: var(--table-row-alt-bg);
+    }
+
+    & table:not(.codehilitetable) th {
+        font-weight: 600;
+        padding: 0.3em 0.5em;
+        white-space: nowrap;
+    }
+    & table.dataframe th {
+        font-weight: 600;
+        padding: 0.3em 0.5em;
+        text-align: right; /* pandas aligns headers right by default */
+        white-space: nowrap;
+    }
+
+
+    & table.dataframe td.index,
+    & table.dataframe th.index {
+        font-weight: 600;
+    }
+
+    & table:not(.codehilitetable) th,
+    & table:not(.codehilitetable) td {
+        border: 1px solid var(--table-border);
+        margin:0;
+        padding:0.5em;
+    }
+    & table.dataframe th,
+    & table.dataframe td {
+        border: 1px solid var(--table-border);
+        margin:0;
+        padding:0.5em;
+        text-align: right;
+    }
+
+    /* Row hover: a distinctly stronger tint than either zebra state, so the cue
+       is unambiguous on odd and even rows. The transition softens the highlight
+       as the pointer sweeps a long table. */
+    & table:not(.codehilitetable) tbody tr,
+    & table.dataframe tbody tr {
+        transition: background-color 0.12s ease;
+    }
+    & table:not(.codehilitetable) tbody tr:hover,
+    & table.dataframe tbody tr:hover {
+        background: var(--table-hover-bg);
+    }
+
+
+    & textarea {
+        width: 100%;
+        height: auto;
+        font-size:var(--text-md);
+        box-sizing:border-box;
+    }
+
+    & a.missing {
+        text-decoration-line: underline;
+        text-decoration-style: dashed;
+    }
+
+    & a.missing::after {
+        content: "⛓️‍💥";
+        /* background-color: var(--link-dark) */
+    }
+
+    & .list_file::marker {content: "📄"}
+    & .list_file.file_md::marker {content: "📝"}
+    & .list_file.file_txt::marker {content: "📄"}
+    & .file_png::marker, & .file_jpg::marker, 
+     & .file_jpeg::marker,
+     & .file_gif::marker, & .file_svg::marker, 
+     & .file_webp::marker, & .file_bmp::marker {content: "📷"}
+    & .list_file.file_canvas::marker {content: "🖼️"}
+    & .list_file.file_pdf::marker {content: "📜"}
+    & .list_file.file_csv::marker,
+     & .list_file.file_tsv::marker,
+     & .list_file.file_xls::marker,
+     & .list_file.file_xlsx::marker {content: "📊"}
+    & .list_file.file_json::marker {content: "🗂️"}
+    & .list_file.file_parquet::marker {content: "📦"}
+    & .list_dir_link::marker {content: "📂"}
+    & .list_dir::marker {content: "📂"}
+
+    /* markdown diffs - colors shared with .chat-diff .diff-* (top-level rules) */
+    & .diff_del {
+        color: color-mix(in oklab, var(--fg-color) 30%, var(--color-danger) 70%);
+        background-color: color-mix(in oklab, var(--bg-color) 70%, var(--color-danger-bg) 30%);
+    }
+    & .diff_add {
+        color: color-mix(in oklab, var(--fg-color) 30%, var(--color-success) 70%);
+        background-color: color-mix(in oklab, var(--bg-color) 70%, var(--color-success-bg) 30%);
+    }
+    & .diff_not {
+        color: color-mix(in oklab, var(--fg-color) 30%, var(--color-info) 70%);
+        background-color: color-mix(in oklab, var(--bg-color) 70%, var(--color-info-bg) 30%);
+    }
+
+
+    & .jupyter-cell {
+        display: flex;
+        flex-direction: column;
+        /* flex-direction: column-reverse; */
+    }
+    & .jupyter-cell .jupyter-button-wrapper {
+        order: 0;
+    }
+    & .jupyter-cell .jupyter-output {
+        order: 1;
+    }
+    & .jupyter-cell .jupyter-code {
+        order: 2;
+    }
+    & .jupyter-cell .jupyter-formatted {
+        order: 3;
+    }
+
+
+    & .jupyter-cell pre {
+        line-height: 100%;
+    }
+    & .jupyter-cell .jupyter-button-wrapper {
+        text-align: right;
+    }
+    & .jupyter-cell .jupyter-button-wrapper button {
+        padding: 0.1em 0.1em;
+        border: 2px solid var(--darker);
+        font-size: 16px;
+        opacity: 0.05;
+        transition-property: opacity;
+        transition: 1s;
+        transition-timing-function: ease;
+        transition-delay: 15s;
+        pointer-events: none;
+    }
+    & .jupyter-cell:hover .jupyter-button-wrapper button {
+        opacity: 1.0;
+        transition-property: opacity;
+        transition: 0.0s;
+        transition-timing-function: ease-out;
+        pointer-events: auto;
+    }
+
+    & .jupyter-cell button {
+        padding: 0.1em 0.1em;
+        border: 2px solid var(--darker);
+        font-size: 16px;
+    }
+
+    & .jupyter-cell .jupyter-output {
+        border: 1px solid var(--lightest);
+        display: none;
+    }
+    & .jupyter-cell .jupyter-code {
+        display: none;
+    }
+
+    /* Banner prepended into a .jupyter-output when the upstream Jupyter
+       kernel has died (idle-culled, crashed). Anchored to the orphaned
+       widget/output content directly below it so the user understands
+       why their click did nothing. Cleared automatically by
+       runJupyterCode() wiping outputArea.innerHTML on the next run. */
+    & .jupyter-output > .kernel-dead-banner {
+        font-size:  var(--text-smd);
+        font-style: italic;
+        font-weight: bolder;
+        padding: var(--space-xs) var(--space-sm);
+        color: var(--color-warning);
+        background-color: var(--color-warning-bg);
+        border-left: 3px solid var(--color-warning);
+    }
+
+    /* Python input() prompt styles */
+    & .jupyter-input-prompt {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 4px 0;
+        padding: 4px;
+    }
+    & .jupyter-input-label {
+        font-family: 'Courier New', Courier, monospace;
+        font-size: var(--text-smd);
+        white-space: pre;
+    }
+    & .jupyter-input-field {
+        flex: 1;
+        font-family: 'Courier New', Courier, monospace;
+        font-size:  var(--text-smd);
+        padding: 2px 4px;
+        border: 1px solid var(--darker);
+        background: var(--lightest);
+    }
+    & .jupyter-input-submit {
+        padding: 2px 8px;
+        cursor: pointer;
+        border: 1px solid var(--darker);
+        background: var(--lighter);
+        font-size: var(--text-smd);
+    }
+    & .jupyter-input-submit:hover {
+        background: var(--lightest);
+    }
+    & .jupyter-input-record {
+        font-family: 'Courier New', Courier, monospace;
+        font-size:  var(--text-smd);
+        margin: 2px 0;
+        padding: 4px;
+    }
+    & .jupyter-input-value {
+        font-weight: bold;
+    }
+
+    /* ipywidget styles */
+    & .tzara-widget {
+        margin: 4px 0;
+    }
+    & .widget-label {
+        display: inline-block;
+        min-width: 100px;
+        margin-right: 8px;
+        font-size: var(--text-smd);
+    }
+    & .widget-readout {
+        display: inline-block;
+        min-width: 40px;
+        text-align: right;
+        margin-left: 8px;
+        font-size: var(--text-smd);
+    }
+    & .widget-intslider,
+    & .widget-floatslider,
+    & .widget-text,
+    & .widget-textarea,
+    & .widget-inttext,
+    & .widget-floattext,
+    & .widget-dropdown,
+    & .widget-checkbox,
+    & .widget-select,
+    & .widget-selectmultiple,
+    & .widget-boundedinttext,
+    & .widget-boundedfloattext,
+    & .widget-password,
+    & .widget-combobox,
+    & .widget-colorpicker,
+    & .widget-datepicker,
+    & .widget-timepicker,
+    & .widget-selectionslider {
+        display: flex;
+        align-items: center;
+        padding: 2px 0;
+    }
+    & .widget-intslider input[type=range],
+    & .widget-floatslider input[type=range],
+    & .widget-selectionslider input[type=range] {
+        flex: 1;
+        min-width: 100px;
+    }
+
+
+    & .widget-vertical {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+    }
+
+    & .widget-intslider.widget-vertical input[type=range],
+    & .widget-floatslider.widget-vertical input[type=range],
+    & .widget-selectionslider.widget-vertical input[type=range] {
+        writing-mode:vertical-lr;          /* IE/Edge */
+        -webkit-appearance: slider-vertical; /* Chrome/Safari */
+        width: 8px;                   /* thickness */
+        height: 150px;                /* length */
+        padding: 0;
+    }
+
+
+    & .widget-intslider.widget-vertical .widget-label,
+    & .widget-floatslider.widget-vertical .widget-label,
+    & .widget-selectionslider.widget-vertical .widget-label,
+    & .widget-intslider.widget-vertical .widget-readout,
+    & .widget-floatslider.widget-vertical .widget-readout,
+    & .widget-selectionslider.widget-vertical .widget-readout {
+        text-align: center;
+        margin:0;
+    }
+
+
+
+    & .widget-text input,
+    & .widget-inttext input,
+    & .widget-floattext input,
+    & .widget-boundedinttext input,
+    & .widget-boundedfloattext input,
+    & .widget-password input,
+    & .widget-combobox input {
+        flex: 1;
+    }
+    & .widget-textarea textarea {
+        flex: 1;
+        resize: vertical;
+    }
+    & .widget-dropdown select,
+    & .widget-select select,
+    & .widget-selectmultiple select {
+        flex: 1;
+    }
+    & .widget-button {
+        padding: 4px 12px;
+        cursor: pointer;
+        border: 1px solid var(--darker);
+        background: var(--lighter);
+    }
+    & .widget-button:hover {
+        background: var(--lightest);
+    }
+    & .widget-toggle {
+        padding: 4px 12px;
+        cursor: pointer;
+        border: 1px solid var(--darker);
+        background: var(--lighter);
+    }
+    & .widget-toggle[aria-pressed="true"] {
+        background: var(--complement, #4a9eff);
+        color: white;
+    }
+    & .widget-output {
+        border-left: 3px solid var(--lightest);
+        padding-left: 8px;
+        margin: 4px 0;
+    }
+    & .widget-vbox {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    & .widget-hbox {
+        display: flex;
+        flex-direction: row;
+        gap: 4px;
+        align-items: center;
+    }
+    & .widget-label-display {
+        display: block;
+        padding: 2px 0;
+    }
+    & .widget-html {
+        padding: 2px 0;
+    }
+    /* RadioButtons */
+    & .widget-radiobuttons {
+        display: flex;
+        align-items: flex-start;
+        padding: 2px 0;
+    }
+    & .widget-radio-group {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+    & .widget-radio-item {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+    }
+    /* ToggleButtons group */
+    & .widget-togglebuttons {
+        display: flex;
+        align-items: center;
+        padding: 2px 0;
+    }
+    & .widget-togglebutton-group {
+        display: flex;
+        gap: 2px;
+    }
+    /* ColorPicker */
+    & .widget-colorpicker input[type=color] {
+        width: 40px;
+        height: 28px;
+        padding: 0 2px;
+        border: 1px solid var(--darker);
+        cursor: pointer;
+    }
+    & .widget-color-hex {
+        margin-left: 8px;
+        font-family: monospace;
+        font-size:  var(--text-smd);
+    }
+    /* SelectionSlider readout (wider for label text) */
+    & .widget-selectionslider .widget-readout {
+        min-width: 80px;
+    }
+    /* Range sliders (IntRangeSlider, FloatRangeSlider) */
+    & .widget-intrangeslider,
+    & .widget-floatrangeslider {
+        display: flex;
+        align-items: center;
+        padding: 2px 0;
+    }
+    & .widget-range-container {
+        position: relative;
+        flex: 1;
+        height: 28px;
+        min-width: 100px;
+    }
+    & .widget-range-container input[type=range] {
+        position: absolute;
+        width: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        pointer-events: none;
+        -webkit-appearance: none;
+        background: transparent;
+        margin: 0;
+    }
+    & .widget-range-container input[type=range]::-webkit-slider-thumb {
+        pointer-events: auto;
+        -webkit-appearance: none;
+        height: 18px;
+        width: 18px;
+        border-radius: 50%;
+        background: var(--complement, #4a9eff);
+        border: 1px solid var(--darker);
+        cursor: pointer;
+    }
+    & .widget-range-container input[type=range]::-moz-range-thumb {
+        pointer-events: auto;
+        height: 16px;
+        width: 16px;
+        border-radius: 50%;
+        background: var(--complement, #4a9eff);
+        border: 1px solid var(--darker);
+        cursor: pointer;
+    }
+    /* Bottom slider (lo) shows the track */
+    & .widget-range-container .widget-range-lo {
+        z-index: 1;
+    }
+    & .widget-range-container .widget-range-lo::-webkit-slider-runnable-track {
+        height: 4px;
+        background: var(--darker);
+        border-radius: 2px;
+    }
+    & .widget-range-container .widget-range-lo::-moz-range-track {
+        height: 4px;
+        background: var(--darker);
+        border-radius: 2px;
+    }
+    /* Top slider (hi) has invisible track */
+    & .widget-range-container .widget-range-hi {
+        z-index: 2;
+    }
+    & .widget-range-container .widget-range-hi::-webkit-slider-runnable-track {
+        height: 4px;
+        background: transparent;
+    }
+    & .widget-range-container .widget-range-hi::-moz-range-track {
+        height: 4px;
+        background: transparent;
+    }
+    /* FloatLogSlider */
+    & .widget-floatlogslider {
+        display: flex;
+        align-items: center;
+        padding: 2px 0;
+    }
+    & .widget-floatlogslider input[type=range] {
+        flex: 1;
+        min-width: 100px;
+    }
+    /* FileUpload */
+    & .widget-fileupload {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 2px 0;
+    }
+    & .widget-fileupload-status {
+        font-size:  var(--text-sm);
+        color: var(--darker);
+    }
+    /* Progress bars (IntProgress, FloatProgress) */
+    & .widget-intprogress,
+    & .widget-floatprogress {
+        display: flex;
+        align-items: center;
+        padding: 2px 0;
+        flex: 1;            /* grow when inside a flex parent (e.g. tqdm's HBox) */
+        min-width: 0;       /* allow flex shrinking below content size */
+    }
+    & .widget-progress-bar-container {
+        flex: 1;
+        min-width: 100px;   /* prevent collapse to 0 when parent is content-sized */
+        height: 20px;
+        background: var(--lightest);
+        border: 1px solid var(--darker);
+        border-radius: 2px;
+        overflow: hidden;
+    }
+    & .widget-progress-bar-fill {
+        height: 100%;
+        background: var(--complement, #4a9eff);
+        transition: width 0.2s, height 0.2s;
+    }
+    & .widget-progress-bar-fill[data-bar-style="success"] { background: #28a745; }
+    & .widget-progress-bar-fill[data-bar-style="info"]    { background: #17a2b8; }
+    & .widget-progress-bar-fill[data-bar-style="warning"] { background: #ffc107; }
+    & .widget-progress-bar-fill[data-bar-style="danger"]  { background: #dc3545; }
+    /* Vertical progress */
+    & .widget-progress-vertical {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    & .widget-progress-vertical .widget-progress-bar-container {
+        width: 20px;
+        height: 150px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+    }
+    & .widget-progress-vertical .widget-progress-bar-fill {
+        width: 100%;
+    }
+    /* Valid indicator */
+    & .widget-valid {
+        display: flex;
+        align-items: center;
+        padding: 2px 0;
+    }
+    & .widget-valid-icon {
+        font-size: var(--text-lg);
+        margin-left: 4px;
+    }
+    & .widget-valid-readout {
+        margin-left: 8px;
+        font-size:  var(--text-smd);
+    }
+    /* Image widget */
+    & .widget-image img {
+        max-width: 100%;
+    }
+    /* Video widget */
+    & .widget-video video {
+        max-width: 100%;
+    }
+    /* Play animation controller */
+    & .widget-play {
+        display: flex;
+        align-items: center;
+        padding: 2px 0;
+        gap: 8px;
+    }
+    & .widget-play-controls {
+        display: flex;
+        gap: 2px;
+    }
+    & .widget-play-btn {
+        padding: 4px 8px;
+        cursor: pointer;
+        border: 1px solid var(--darker);
+        background: var(--lighter);
+        font-size: var(--text-md);
+        line-height: 1;
+    }
+    & .widget-play-btn:hover {
+        background: var(--lightest);
+    }
+    & .widget-play-value {
+        min-width: 40px;
+        text-align: right;
+        font-size:  var(--text-smd);
+    }
+    /* Tab container */
+    & .widget-tab {
+        margin: 4px 0;
+    }
+    & .widget-tab-bar {
+        display: flex;
+        border-bottom: 2px solid var(--darker);
+    }
+    & .widget-tab-btn {
+        padding: 6px 12px;
+        cursor: pointer;
+        border: 1px solid var(--darker);
+        border-bottom: none;
+        background: var(--lighter);
+        margin-right: 2px;
+        font-size: var(--text-smd);
+    }
+    & .widget-tab-btn:hover {
+        background: var(--lightest);
+    }
+    & .widget-tab-btn.active {
+        background: var(--lightest);
+        border-bottom: 2px solid var(--lightest);
+        margin-bottom: -2px;
+    }
+    & .widget-tab-panel {
+        display: none;
+        padding: 8px 4px;
+    }
+    & .widget-tab-panel.widget-tab-visible {
+        display: block;
+    }
+    /* Accordion container */
+    & .widget-accordion {
+        margin: 4px 0;
+    }
+    & .widget-accordion-header {
+        width: 100%;
+        text-align: left;
+        padding: 8px 12px;
+        cursor: pointer;
+        border: 1px solid var(--darker);
+        background: var(--lighter);
+        font-size:  var(--text-smd);
+        margin-top: -1px;
+    }
+    & .widget-accordion-header:first-child {
+        margin-top: 0;
+    }
+    & .widget-accordion-header:hover {
+        background: var(--lightest);
+    }
+    & .widget-accordion-body {
+        display: none;
+        padding: 8px;
+        border: 1px solid var(--darker);
+        border-top: none;
+    }
+    & .widget-accordion-body.open {
+        display: block;
+    }
+    /* Stack container */
+    & .widget-stack-panel {
+        display: none;
+    }
+    & .widget-stack-panel.widget-stack-visible {
+        display: block;
+    }
+    /* GridBox */
+    & .widget-gridbox {
+        display: grid;
+        gap: 4px;
+    }
+
+    /* ipympl matplotlib widget styles */
+    & .mpl-figure {
+        display: inline-block;
+        margin: 4px 0;
+    }
+    & .mpl-header,
+    & .mpl-footer {
+        text-align: center;
+        font-size:  var(--text-sm);
+        min-height: 1.2em;
+        padding: 2px 4px;
+    }
+    & .mpl-canvas-container {
+        overflow: auto;
+    }
+    & .mpl-canvas-div {
+        position: relative;
+        display: inline-block;
+    }
+    & .mpl-canvas-div canvas {
+        display: block;
+    }
+    & .mpl-canvas-div .mpl-canvas-top {
+        position: absolute;
+        top: 0;
+        left: 0;
+    }
+    & .mpl-toolbar {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 2px;
+    }
+    & .mpl-toolbar-horizontal {
+        flex-direction: row;
+    }
+    & .mpl-toolbar-btn {
+        padding: 4px 6px;
+        cursor: pointer;
+        border: 1px solid var(--darker);
+        background: var(--lighter);
+        font-size:  var(--text-md);;
+        line-height: 1;
+        min-width: 28px;
+        text-align: center;
+    }
+    & .mpl-toolbar-btn:hover {
+        background: var(--lightest);
+    }
+    & .mpl-toolbar-btn.active {
+        background: var(--complement, #4a9eff);
+        color: white;
+    }
+    & .mpl-toolbar-separator {
+        border-top: 1px solid var(--darker);
+        margin: 2px 0;
+    }
+    & .mpl-toolbar-horizontal .mpl-toolbar-separator {
+        border-top: none;
+        border-left: 1px solid var(--darker);
+        margin: 0 2px;
+        min-height: 20px;
+    }
+    & .mpl-toolbar-area {
+        display: flex;
+        align-items: flex-start;
+    }
+
+
+        /* Remove bullets for unordered checklists only */
+    & ul .task-list-item {
+        list-style-type: none;
+        /* margin-left: -20px; */
+    }
+
+
+        /* width: 10px;
+    height: 10px;
+    font-size: 9px;
+    background: #8585cf;
+    display: inline-block;
+    border: 1px solid #000000;
+    border-radius: 3px;
+    color: white;
+    position: relative;
+    content: "✔";
+    text-align: center;
+    float: left;
+    margin: 3px 4px 0 5px; */
+
+    & ul .task-list-item::before {
+        content: "\00A0";
+        color: var(--darkest);
+        border:1px inset var(--darker);
+        box-shadow: inset 0px 0px 1rlh rgb(from var(--base-color) r g b / 0.4);
+        border-radius:0.1rlh;
+        width:0.9em;
+        line-height: 0.9em;
+        display:inline-block;
+    }
+
+    & ul .task-list-item[data-checked="checked"]::before {
+ 
+        box-shadow: inset 0px 0px 1rlh var(--base-color);
+        content: "✓";
+        font-weight: bolder;
+    }
+
+    & li.task-list-item[data-checked="checked"] > span {
+        /* text-decoration: line-through; */
+        /* text-decoration-color: var(--base-color); */
+        /* text-decoration-color: var(--base-60-darker); */
+        /* text-decoration-style:double; */
+        /* text-decoration-thickness: 3px; */
+        font-style:oblique;
+        
+    }
+    /* & .task-list-item input[type="checkbox"]:disabled{
+        border:7px solid red;
+        accent-color: red;
+    } */
+
+ 
+
+    /* Keep numbers for ordered checklists
+    Do not set list-style-type: none here if you want to see the numbers "1.", "2."
+    You might want a slight margin adjustment depending on alignment preferences  */
+    /* & ol .task-list-item { 
+   
+     } */
+
+    
+    /* Per-message controls (copy markdown): right-aligned footer row, revealed on
+    hover and faded back out shortly after - same idiom as the Jupyter cell
+    buttons. Appearance comes from .btn-ghost/.btn-sm, which outrank the
+    #document-scoped button rules the chat panel sits inside. */
+    .chat-msg-tools {
+        text-align: right;
+        margin-top: var(--space-xs);
+        line-height: 1;
+    }
+
+    .chat-copy-btn {
+            padding: 0.1em 0.1em;
+            border: 2px solid var(--darker);
+            font-size: 16px;
+            background-color: var(--base-color);
+        opacity: 0.05;
+        pointer-events: none;
+        transition: opacity 1s ease 3s;
+    }
+
+    .chat-msg-assistant:hover .chat-copy-btn,
+    .chat-copy-btn:focus-visible {
+             background-color: var(--lighter);
+        opacity: 1.0;
+        pointer-events: auto;
+        transition: opacity 0s;
+    }
+
+
+
+    
+}
+
+/* ---- Chat UI ---- */
+.chat-container {
+    margin-top: var(--space-lg);
+}
+
+.chat-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-lg);
+    margin-bottom: var(--space-sm);
+}
+
+/* Muted status line shown next to the Reset button. */
+.chat-notice {
+    color: color-mix(in oklab, var(--fg-color) 50%, var(--bg-color));
+    font-size: var(--text-sm);
+    font-style: italic;
+}
+
+.chat-reset-btn {
+    font-size: var(--text-sm);
+    padding: 0.2em 0.8em !important;
+}
+
+
+.chat-history {
+    max-height: 60vh;
+    overflow-y: auto;
+    margin-bottom: var(--space-sm);
+}
+
+.chat-msg {
+    padding: var(--space-sm) var(--space-md);
+    margin: 0.3em 0;
+    border-radius: var(--radius-md);
+    max-width: 85%;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    border-width: var(--space-xxs);
+    border-style: solid;
+    border-color: var(--base-color);
+
+}
+
+/* User message: subtle right-aligned tint + accent bar. */
+.chat-msg-user {
+    background-color: color-mix(in oklab, var(--base-color) 20%, var(--bg-color));
+    border: none;
+    border: 3px solid color-mix(in oklab, var(--base-color) 65%, var(--bg-color));
+    border-radius: var(--radius-md);
+    max-width: 80%;
+    margin-left: auto;
+    text-align: left;
+    padding: var(--space-sm) var(--space-md);
+}
+
+.chat-msg-user pre,
+.chat-msg-user code,
+.chat-msg-user .codehilite {
+    text-align: left;
+}
+
+/* Assistant reply: flows like prose, no bubble. */
+.chat-msg-assistant {
+    background-color: transparent;
+    border: none;
+    padding: var(--space-xs) 0;
+    margin: 0.2em 0;
+    margin-right: 0;
+    max-width: 100%;
+    line-height: 1.6;
+}
+
+/* System notes + error bubbles: muted, centered, small. */
+.chat-msg-system {
+    background: transparent;
+    border: none;
+    color: color-mix(in oklab, var(--fg-color) 55%, var(--bg-color));
+    font-size: var(--text-sm);
+    text-align: center;
+    max-width: 100%;
+    padding: var(--space-xs) 0;
+    margin: 0.4em auto;
+}
+
+/* Applied while tokens are streaming (raw markdown shown via textContent).
+   Removed by renderMarkdown() after innerHTML is replaced with real HTML. */
+.chat-msg.chat-msg-streaming {
+    white-space: pre-wrap;
+}
+
+.chat-msg.chat-msg-assistant.chat-msg-streaming {
+    color: color-mix(in oklab, var(--fg-color) 78%, var(--bg-color));
+}
+
+.chat-msg-assistant pre,
+.chat-msg-assistant .codehilite pre {
+    white-space: pre;
+    overflow-x: auto;
+}
+
+/* Quiet sources footer. */
+.chat-sources {
+    font-size: var(--text-sm);
+    padding: var(--space-md);
+    margin-top: var(--space-sm);
+    color: color-mix(in oklab, var(--fg-color) 55%, var(--bg-color));
+    border: 1px solid color-mix(in oklab, var(--fg-color) 10%, var(--bg-color));
+}
+
+.chat-sources a {
+    margin-right: var(--space-sm);
+}
+
+.chat-input-row {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: flex-end;
+    scroll-margin-bottom: 1em;
+}
+
+.chat-input {
+    flex: 1;
+    resize: none;
+    font-size: var(--text-md);
+    padding: var(--space-sm) var(--space-md);
+    box-sizing: border-box;
+    overflow-y: auto;
+    min-height: calc(1.2em * 2 + 0.8em);
+     /* ~15 lines + padding */
+    max-height: calc(1.2em * 15 + 0.8em); 
+    border: 3px solid color-mix(in oklab, var(--base-color) 65%, var(--bg-color));
+    border-radius: var(--radius-md);
+    background-color: color-mix(in oklab, var(--base-color) 20%, var(--bg-color));
+    color: var(--fg-color);
+    scroll-margin-bottom: 1em;
+}
+
+/* ---- Chat: action cards ----
+   The card shell (border, radius, background) comes from .callout + the
+   data-callout applied by chat.js, so approval/result cards match the
+   admonition system natively. These rules handle chat-specific layout, the
+   muted preview/code panel, and the Continue-card warning re-skin. */
+.chat-action-header {
+    font-size: var(--text-sm);
+    margin-bottom: var(--space-sm);
+    color: color-mix(in oklab, var(--fg-color) 72%, var(--bg-color));
+    font-weight: 600;
+}
+
+.chat-action-header code {
+    font-size: var(--text-sm);
+    background: color-mix(in oklab, var(--base-color) 12%, var(--bg-color));
+    padding: 0.1em 0.3em;
+    border-radius: var(--radius-sm);
+}
+
+.chat-action-icon {
+    font-size: var(--text-md);
+}
+
+/* Continue / step-limit / malformed card -> WARNING callout. Override the
+   callout's own color vars so the native .callout binding paints it amber:
+   a clear "the run stopped, act now" distinction from the blue approval
+   cards, with identical callout geometry. --color-warning* flip via
+   light-dark(). .chat-continue-card.callout (0,2,0) wins the data-callout
+   info assignment by source order (this block follows the callout defs). */
+.chat-continue-card.callout {
+    --callout-color: var(--color-warning);
+    --callout-bg-color: var(--color-warning-bg);
+}
+
+/* Preview panel: muted neutral inset instead of the bright amber --lighter. */
+.chat-action-preview {
+    max-height: 200px;
+    overflow-y: auto;
+    margin: var(--space-sm) 0;
+    padding: var(--space-sm);
+    background: color-mix(in oklab, var(--fg-color) 6%, var(--bg-color));
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+}
+
+.chat-action-preview pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* run_python code proposal: monospace muted panel.  */
+.chat-action-preview pre.chat-code-proposal,
+pre.chat-code-proposal {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    white-space: pre;
+    overflow-x: auto;
+    background: color-mix(in oklab, var(--fg-color) 8%, var(--bg-color));
+    border: 1px solid color-mix(in oklab, var(--fg-color) 12%, var(--bg-color));
+    border-radius: var(--radius-sm);
+    padding: var(--space-sm) var(--space-md);
+}
+
+.chat-action-buttons {
+    display: flex;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+}
+
+/* Buttons intentionally use the native #document button base-color style for
+   consistency across the app (no per-button success/danger coloring). */
+.chat-action-btn {
+    padding: var(--space-xs) var(--space-lg);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: var(--text-sm);
+}
+
+.chat-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* .chat-action-result inherits border/bg/radius from .callout when chat.js
+   applies the success/failure callout classes. */
+.chat-action-result a {
+    margin-left: var(--space-sm);
+}
+
+/* ---- Chat: diff preview ----
+   Color tokens are shared with #document .diff_add/.diff_del/.diff_not
+   (defined inside #document around line 1115). */
+.chat-diff { font-family: monospace; font-size: var(--text-sm); white-space: pre-wrap; }
+.chat-diff .diff-del {
+    color: color-mix(in oklab, var(--fg-color) 30%, var(--color-danger) 70%);
+    background-color: color-mix(in oklab, var(--bg-color) 70%, var(--color-danger-bg) 30%);
+}
+.chat-diff .diff-add {
+    color: color-mix(in oklab, var(--fg-color) 30%, var(--color-success) 70%);
+    background-color: color-mix(in oklab, var(--bg-color) 70%, var(--color-success-bg) 30%);
+}
+.chat-diff .diff-hunk {
+    color: color-mix(in oklab, var(--fg-color) 30%, var(--color-info) 70%);
+    background-color: color-mix(in oklab, var(--bg-color) 70%, var(--color-info-bg) 30%);
+}
+.chat-diff .diff-ctx { color: var(--fg-color); }
+
+/* Thinking / status: muted, with the pulsing animation + tabular timer. */
+.chat-msg-status {
+    color: color-mix(in oklab, var(--fg-color) 50%, var(--bg-color));
+    font-style: italic;
+    font-size: var(--text-sm);
+    animation: chat-status-pulse 1.59s ease-in-out infinite;
+}
+
+@keyframes chat-status-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4;}
+}
+
+.chat-status-timer {
+    display: inline;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
+    font-size: var(--text-md);
+}
+
+/* ---- Chat: activity log ----
+   Compact timeline in the regular font (themes may re-style). */
+.chat-activity-log {
+    margin: 0.3em 0;
+    padding: var(--space-sm) var(--space-md);
+    border: 2px solid color-mix(in oklab, var(--base-color) 30%, var(--bg-color));
+    background: color-mix(in oklab, var(--base-color) 4%, var(--bg-color));
+    font-size: var(--text-xs);
+    color: color-mix(in oklab, var(--fg-color) 55%, var(--bg-color));
+    max-height: 8em;
+    overflow-y: auto;
+}
+
+.chat-activity-entry {
+    padding: 0.15em 0;
+    line-height: 1.3;
+}
+
+
+.chat-activity-entry + .chat-activity-entry {
+    border-top: 1px solid color-mix(in oklab, var(--base-color) 30%, var(--bg-color));
+}
+
+
+/* Utility - JS toggles this in place of inline style="display:none" */
+.chat-hidden { display: none !important; }
+
+.chat-activity-entry::before {
+    content: '\25B8 ';
+    opacity: 0.7;
+    font-size: 100%;
+    font-weight: bold;
+}
+
+/* ---- Chat: fullpage layout (global chat) ---- */
+.chat-container-fullpage {
+    max-width: 800px;
+    margin: 1em auto 0;
+}
+
+.chat-history-fullpage {
+    max-height: 75vh;
+}
+
+.chat-diff-doc-header {
+    margin-top: 0.75em;
+    margin-bottom: 0.25em;
+    padding: 0.25em 0.5em;
+    background: color-mix(in oklab, var(--base-color) 10%, var(--bg-color));
+    border-radius: var(--radius-sm);
+    font-size:  var(--text-sm);
+    font-weight: 600;
+}
+
+.chat-diff-doc-header:first-child {
+    margin-top: 0;
+}
+
+.chat-action-paths {
+    margin-top: 0.5em;
+    font-size:  var(--text-smd);
+}
+
+.chat-action-paths a {
+    display: inline-block;
+    margin-right: 0.75em;
+}
+
+/* ---- Chat: artifact figure (run_python image) ---- */
+.chat-artifact {
+    background: transparent;
+    border: none;
+    padding: var(--space-xs) 0;
+    max-width: 100%;
+}
+
+.chat-artifact img {
+    max-width: 100%;
+    margin: var(--space-md) auto;
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in oklab, var(--fg-color) 12%, var(--bg-color));
+}
+
+/* ---- Sidebar: summary ---- */
+.sidebar-summary {
+    margin-top: 1em;
+    padding-top: 0.5em;
+    border-top: 1px solid var(--lighter);
+}
+
+.sidebar-summary-label {
+    font-size:  var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--darker);
+    margin-bottom: 0.3em;
+}
+
+.sidebar-summary-text {
+    font-size:  var(--text-sm);
+    /* line-height: 1.4; */
+}
+
+/* ---- Sidebar: related pages ---- */
+.sidebar-related {
+    margin-top: 1em;
+    padding-top: 0.5em;
+    border-top: 1px solid var(--lighter);
+}
+
+.sidebar-related-label {
+    font-size:  var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--darker);
+    margin-bottom: 0.3em;
+}
+
+.sidebar-related-link {
+    display: block;
+    font-size:  var(--text-sm);
+    padding: 0.15em 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.search-result {
+    border-left: 4px solid var(--base-color);
+    background-color: color-mix(in oklab, var(--base-color) 5%, var(--bg-color));
+    border-radius: var(--radius-md);
+    padding: var(--space-sm) var(--space-sm);
+    margin: var(--space-sm) 0;
+    border: 2px solid color-mix(in oklab, var(--base-color) 45%, var(--bg-color));
+}
+
+.search-result h3 {
+    margin-top: 0 !important;
+    margin-bottom: var(--space-sm) !important;
+    border-bottom: none !important;
+}
+
+.search-result small {
+    color: color-mix(in oklab, var(--base-color) 45%, var(--fg-color));
+    background-color:  color-mix(in oklab, var(--base-color) 45%, var(--bg-color));
+    /* border: 7px solid green; */
+}
+
+.search-result .search-snippet {
+    margin: var(--space-sm) 0;
+    font-size:  var(--text-smd);
+    line-height: 1.4;
+}
+
+.search-result .search-section {
+  color: color-mix(in oklab, var(--base-color) 45%, var(--fg-color));
+    background-color:  color-mix(in oklab, var(--base-color) 45%, var(--bg-color));
+}
+
+.search-result .search-source {
+    font-style: italic;
+}
+
+#search-page {
+    max-width: min(80%, 800px); /* match #document's width so search isn't wider than a page */
+    margin: 0 auto;
+    padding: 1em;
+}
+
+.search-page-form {
+    display: flex;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-xl);
+}
+
+.search-page-input {
+    flex: 1;
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--text-md);
+    border: 2px solid var(--darker);
+    border-radius: var(--radius-sm);
+   
+    color: color-mix(in oklab, var(--base-color) 10%, var(--fg-color)); 
+}
+
+.search-page-input:focus {
+    border-color: var(--base-color);
+    outline: none;
+}
+
+/* .search-page-button picks up primary button styling automatically;
+   leave only the cursor override (defensive). */
+.search-page-button {
+    cursor: pointer;
+}
+
+.search-meta {
+    margin-bottom: var(--space-lg);
+    color:  color-mix(in oklab, var(--base-color) 45%, var(--fg-color));
+}
+
+.search-timing {
+    color: var(--lighter);
+    font-size: var(--text-sm);
+}
+
+/* classes to illustrate example markdown */
+.foo {
+    border-width: 3px;
+    border-style: double;
+    border-radius: 33%;
+    border-color: var(--darkest);
+}
+
+.bar {
+    text-decoration-line: overline !important;
+    text-decoration-style: double !important;
+    background-color: var(--complement);
+}
+
+
+@media (max-width:816px) {
+
+    #document {
+        font-size: 120%;
+        padding: 0;
+        margin: auto;
+        width: 99%;
+    }
+    
+    #document_header img {
+        width: 64px;
+        height: 64px;
+        transition: width 0.3s ease, height 0.3s ease;
+    }
+
+    #toc {
+        width: 99%;
+        float: none;
+        display: none;
+    }
+
+}
+
+
+@media (max-width:639px) {
+
+    #document {
+        font-size: 150%;
+        padding: 0;
+        margin: auto;
+        width: 99%;
+    }
+
+    #toc {
+        width: 99%;
+        float: none;
+        display: none;
+    }
+
+    /* #document_header img {
+        width: 32px;
+        height: 32px;
+        transition: width 0.3s ease, height 0.3s ease;
+    } */
+
+}
+
+
+@media (prefers-color-scheme: light) {
+    div.linenodiv {
+        border-right:1px solid;
+        opacity: 0.5;
+    }
+}
+
+
+@media (prefers-color-scheme: dark) {
+    div.linenodiv {
+        border-right:1px solid;
+        opacity: 0.5;
+    }
+}
+
+/* ---- Ollama model pull ---- */
+.ollama-pull-row {
+    display: flex;
+    gap: 0.5em;
+    align-items: center;
+    margin-bottom: 0.75em;
+}
+
+.ollama-pull-row input[type="text"] {
+    flex: 1;
+    padding: 0.4em;
+    font-size:  var(--text-md);
+    border: 1px solid var(--darker);
+    border-radius: 4px;
+    background-color: var(--bg-color);
+    color: var(--fg-color);
+}
+
+.ollama-pull-status {
+    margin-top: 0.5em;
+    padding: 0.5em;
+    background: var(--lighter);
+    border-radius: 4px;
+    font-size:  var(--text-smd);
+}
+
+.ollama-pull-progress-bar {
+    height: 1.2em;
+    background: var(--lightest);
+    border-radius: 4px;
+    margin: 0.4em 0;
+    overflow: hidden;
+}
+
+.ollama-pull-progress-fill {
+    height: 100%;
+    background: var(--darker);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+/* ---- Edit-view AI assist ---- */
+
+/* Strikethrough on the original text being rewritten */
+.cm-ai-strike {
+    text-decoration: line-through;
+    opacity: 0.55;
+}
+
+/* Container span for the proposed text widget */
+.cm-ai-proposal {
+    display: inline;
+    font-style: italic;
+    border-radius: 3px;
+    padding: 0 0.15em;
+}
+
+.cm-ai-proposal-text {
+    white-space: pre-wrap;
+}
+
+/* Additive operations - insert (e.g. Continue), prepend, append: faint, like
+   ghost text. The class comes from "cm-ai-" + operation, so each additive
+   operation needs naming here or it renders unstyled. */
+.cm-ai-insert .cm-ai-proposal-text,
+.cm-ai-prepend .cm-ai-proposal-text,
+.cm-ai-append .cm-ai-proposal-text {
+    color: var(--fg-color);
+    opacity: 0.55;
+}
+
+/* Replace-operation (e.g. Rewrite, Tighten, etc.): highlighted addition.
+   Alpha rather than an opaque tint: this sits over the editor surface and,
+   for a granular diff, over the changed-line background too. */
+.cm-ai-replace .cm-ai-proposal-text {
+    background: rgb(from var(--color-success) r g b / 0.18);
+    color: var(--fg-color);
+    opacity: 1;
+}
+
+/* Granular word-level diff (large replaces). Deletions struck in place;
+   insertions shown inline in green - so only what changed stands out and
+   unchanged text renders normally. */
+.cm-ai-diff-del {
+    text-decoration: line-through;
+    background: var(--color-danger-bg);
+    opacity: 0.7;
+}
+
+.cm-ai-diff-ins {
+    background: rgb(from var(--color-success) r g b / 0.25);
+    border-radius: var(--radius-sm);
+    white-space: pre-wrap;
+}
+
+/* A change the user declined: the original is kept (marked subtly) and the
+   proposed insertion is shown struck so it's clear what was passed over. */
+.cm-ai-diff-kept {
+    border-bottom: 1px dotted var(--darker);
+}
+
+.cm-ai-diff-ins-rejected {
+    text-decoration: line-through;
+    opacity: 0.4;
+    white-space: pre-wrap;
+}
+
+/* One changed region: the proposed insertion plus its ✓/✗ toggle. */
+.cm-ai-hunk {
+    font-style: normal;
+}
+
+/* The keyboard-focused change (Tab / Shift-Tab cursor): outline both the struck
+   original and the hunk widget so the current change is unmistakable. Only the
+   focused hunk gets an outline at all, so presence still marks focus - which
+   frees the color to carry meaning instead. --color-warning is the fallback for
+   a pure deletion, whose widget holds only the toggle and no inserted text. */
+.cm-ai-hunk.focused,
+.cm-ai-diff-focus {
+    outline: 2px solid var(--color-warning);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+}
+
+/* Outline semantics match the fills: danger on the text going away, success on
+   the text that replaces it. Both flip with the hunk's accept/reject decision -
+   a rejected hunk KEEPS its original and discards the insertion. */
+.cm-ai-diff-focus.cm-ai-diff-del { outline-color: var(--color-danger); }
+.cm-ai-diff-focus.cm-ai-diff-kept { outline-color: var(--color-success); }
+.cm-ai-hunk.focused:has(.cm-ai-diff-ins) { outline-color: var(--color-success); }
+.cm-ai-hunk.focused:has(.cm-ai-diff-ins-rejected) { outline-color: var(--color-danger); }
+
+/* Compact toggle glyph - kept within the line height (no super/sub shift, no
+   opacity). Colors match the hunk outlines: success on the accepted default,
+   danger on a rejected one, whose bold weight makes the few exceptions stand
+   out without needing a third hue. */
+.cm-ai-hunk-toggle {
+    display: inline-block;
+    margin: 0 1px;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: 0.85em;
+    line-height: 1;
+    vertical-align: baseline;
+    cursor: pointer;
+    user-select: none;
+}
+
+.cm-ai-hunk-toggle.accepted {
+    color: var(--color-success);
+}
+
+.cm-ai-hunk-toggle.rejected {
+    color: var(--color-danger);
+    font-weight: 700;
+}
+
+.cm-ai-hunk-toggle:hover {
+    text-decoration: underline;
+}
+
+/* Keyboard-control hint under the Apply / Cancel chip. */
+.cm-ai-diff-hint {
+    display: block;
+    margin: 4px 0 0 6px;
+    font-style: normal;
+    font-size: var(--text-sm);
+    opacity: 0.6;
+}
+
+/* The Apply / Cancel chip that trails a granular diff - carries no proposed
+   text of its own (the diff is painted in place), just the buttons. */
+.cm-ai-diff-chip {
+    font-style: normal;
+}
+
+.cm-ai-streaming-cursor {
+    display: inline-block;
+    margin-left: 1px;
+    animation: cm-ai-blink 1s steps(2, start) infinite;
+    color: var(--fg-color);
+    opacity: 0.7;
+}
+
+@keyframes cm-ai-blink {
+    to { visibility: hidden; }
+}
+
+.cm-ai-chip {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 6px;
+    vertical-align: baseline;
+    font-style: normal;
+    font-size:  var(--text-sm);
+}
+
+.cm-ai-chip button {
+    border: 1px solid var(--darker);
+    background: var(--lighter);
+    color: var(--fg-color);
+    padding: 1px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: inherit;
+    line-height: 1.2;
+}
+
+.cm-ai-chip-accept {
+    border-color: rgb(from var(--color-success) r g b / 0.6) !important;
+}
+
+.cm-ai-chip-reject {
+    opacity: 0.85;
+}
+
+.cm-ai-chip button:hover {
+    background: var(--lightest);
+}
+
+/* Sources row - surfaces which corpus documents grounded the suggestion.
+   Rendered for retrieval-using commands (e.g. continue_with_sources)
+   alongside the proposal in both streaming and ready states. */
+.cm-ai-sources {
+    display: block;
+    margin-top: 4px;
+    margin-left: 6px;
+    font-style: normal;
+    font-size:  var(--text-sm);
+    opacity: 0.75;
+    line-height: 1.4;
+}
+
+.cm-ai-sources-lead {
+    color: var(--fg-color);
+    opacity: 0.7;
+    font-style: italic;
+}
+
+.cm-ai-sources-sep {
+    color: var(--darker);
+    margin: 0 2px;
+}
+
+.cm-ai-source-link {
+    color: var(--fg-color);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--darker);
+    cursor: pointer;
+}
+
+.cm-ai-source-link:hover {
+    text-decoration: underline;
+    opacity: 1;
+}
+
+/* Graph-expanded sources are tagged distinctly so the user can tell
+   "directly relevant" from "linked-from-relevant" at a glance. */
+.cm-ai-source-link.cm-ai-source-linked {
+    font-style: italic;
+    border-bottom-style: dashed;
+}
+
+/* Slash-style floating menu. Generic chrome - reusable for any
+   command-palette-style popup. edit-assist uses it as a base and
+   layers picker-specific row classes on top. Top/left/bottom are
+   set inline by the JS that anchors the menu to a cursor position. */
+/* The slash menu and the autolink/cite pickers are hosted by CodeMirror's
+   tooltip manager (see edit_assist.js), which owns position/top/left inline and
+   flips above when there isn't room below. z-index keeps them above app chrome;
+   the max-height cap makes a long command list scroll instead of running off
+   the viewport (the manager measures this capped height when it flips). */
+.slash-menu {
+    z-index: 9999;
+    background: var(--bg-color);
+    color: var(--fg-color);
+    border: 1px solid var(--darker);
+    border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    min-width: 180px;
+    max-height: 40vh;
+    overflow-y: auto;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size:  var(--text-smd);
+    padding: 4px 0;
+}
+
+.slash-menu-item {
+    padding: 6px 12px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.slash-menu-item.active {
+    background: var(--lighter);
+}
+
+.slash-menu-item.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.slash-menu-item:hover:not(.disabled) {
+    background: var(--lighter);
+}
+
+/* Filter hint shown above items when the user has typed beyond "/" */
+.slash-menu-filter {
+    padding: 4px 12px;
+    font-family: 'Courier New', Courier, monospace;
+    font-size:  var(--text-sm);
+    opacity: 0.65;
+    border-bottom: 1px solid var(--lighter);
+    margin-bottom: 2px;
+}
+
+.slash-menu-empty {
+    padding: 6px 12px;
+    opacity: 0.5;
+    font-style: italic;
+}
+
+/* Working indicator - shown inside the proposal widget while a tool-calling
+   editor runs (before any text has streamed), so the wait doesn't read as a
+   hang. The label carries the loop's own narration ("Searching the wiki…"). */
+.cm-ai-working {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 4px;
+    font-style: italic;
+    font-size:  var(--text-sm);
+    opacity: 0.8;
+}
+
+.cm-ai-working-spinner {
+    width: 0.8em;
+    height: 0.8em;
+    border: 2px solid var(--darker);
+    border-top: 1px solid var(--lighter);
+    border-radius: var(--radius-pill);
+    animation: cm-ai-spin 0.7s linear infinite;
+    background: conic-gradient(from var(--rotation), var(--base-color), var(--base-60),var(--base-120),var(--base-180), var(--base-240), var(--base-300), var(--base-color)  );
+}
+
+@keyframes cm-ai-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Error state - a failed run surfaces here (auto-dismisses) instead of the
+   widget silently vanishing. Esc / the chip dismisses it. */
+.cm-ai-error {
+    color: var(--color-danger);
+    font-style: normal;
+    font-size:  var(--text-sm);
+}
+
+/* op:note confirmation ("Saved to …") - positive twin of .cm-ai-error. */
+.cm-ai-notice {
+    color: var(--color-success);
+    font-style: normal;
+    font-size:  var(--text-sm);
+}
+.cm-ai-notice-link {
+    color: var(--color-success);
+    font-weight: 600;
+    text-decoration: underline;
+}
+
+/* Custom-prompt input: the small panel that captures a one-off instruction
+   after choosing "Prompt" from the "/" menu. Hosted by the same tooltip slot
+   as the slash menu. */
+.slash-prompt {
+    z-index: 9999;
+    background: var(--bg-color);
+    color: var(--fg-color);
+    border: 1px solid var(--darker);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    padding: 8px;
+    min-width: 280px;
+}
+
+.slash-prompt-hint {
+    font-size:  var(--text-sm);
+    opacity: 0.65;
+    margin-bottom: 6px;
+}
+
+.slash-prompt-input {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    /* --bg-color (flips with the theme) not --lighter (the amber hover-tint,
+       which reads as saturated orange in dark mode and kills placeholder
+       contrast). Matches the slash menu's own surface. */
+    background: var(--bg-color);
+    color: var(--fg-color);
+    border: 1px solid var(--darker);
+    border-radius: var(--radius-sm);
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size:  var(--text-smd);
+    line-height: 1.4;
+}
+
+.slash-prompt-input::placeholder {
+    color: var(--fg-color);
+    opacity: 0.5;
+}
+
+.slash-prompt-input:focus {
+    outline: none;
+    border-color: var(--color-warning);
+}
+
+/* edit-assist picker variants - modifiers on the .slash-menu base */
+.edit-assist-cite-picker {
+    max-width: 520px;
+}
+
+/* edit-assist picker row content - shared by autolink + cite pickers.
+   The base .slash-menu-item provides padding and hover state; these
+   classes only style the inner stacked text rows. */
+.edit-assist-picker-title {
+    font-weight: 600;
+}
+
+.edit-assist-picker-subtitle {
+    font-size:  var(--text-sm);
+    opacity: 0.7;
+}
+
+.edit-assist-picker-snippet {
+    font-size:  var(--text-sm);
+    opacity: 0.75;
+    font-style: italic;
+    margin-top: 2px;
+    white-space: normal;
+}
+
+.edit-assist-picker-meta {
+    font-size:  var(--text-sm);
+    opacity: 0.6;
+    margin-top: 2px;
+}
+
+/* ---- Chat: run_python proposals + artifacts ----
+   Moved here from document.html's inline <style>; chat.js is shared across the
+   document and full-page chat, so its styling belongs with the rest of chat. */
+.chat-code-proposal {
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    overflow-x: auto;
+    background: var(--lightest);
+    border: 1px solid var(--darker);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    line-height: 1.4;
+}
+.chat-code-proposal code { white-space: pre; font-family: monospace; }
+.chat-msg.chat-artifact { padding: 0.3em 0; }
+.chat-msg.chat-artifact img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--darker);
+}
+
+/* ---- Agent-owned page banner ----
+   Shown on any page written by an agent (document.html). Uses the global
+   --color-warning tokens (OKLCH amber) instead of the old hardcoded #b8860b:
+   the previous --callout-* fallbacks never resolved (those vars are scoped to
+   .callout[data-callout], not :root). */
+.agent-owned-banner {
+    border: 1px solid var(--color-warning);
+    border-left-width: 4px;
+    border-radius: var(--radius-sm);
+    background: var(--color-warning-bg);
+    padding: var(--space-sm) var(--space-md);
+    margin: var(--space-xs) 0 var(--space-lg) 0;
+    font-size: var(--text-smd);
+}
+.agent-owned-banner .agent-name { font-weight: bold; }
+
+/* ---- Inline canvas embed (![[Board.canvas]]) ----
+   Card + toolbar layout for a read-only canvas embedded in a wiki page. Moved
+   here from base.html's inline <style> (an embed can appear on any page, so
+   it's sitewide). The --tc-* theme bridge stays inline via _canvas_theme.html
+   because it must be unlayered to beat the tzara-canvas library defaults. */
+.canvas-embed {
+    border: 1px solid var(--darker);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin: var(--space-lg) 0;
+    background: var(--bg-color);
+}
+.canvas-embed-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--lighter);
+    background: var(--lightest);
+    font-size: var(--text-sm);
+}
+.canvas-embed-title { font-weight: 600; color: var(--fg-color); }
+.canvas-embed-open { color: var(--darkest); text-decoration: none; white-space: nowrap; }
+.canvas-embed-open:hover { text-decoration: underline; }
+.canvas-embed-mount { position: relative; width: 100%; }
+.canvas-embed-error { padding: var(--space-lg); color: var(--color-danger); font-size: var(--text-smd); }
+
+/* ---- Inline file embeds (![[data.csv]] / ![[report.pdf]]) ----
+   Server-rendered preview cards for browsing (CSV/TSV table, PDF viewer). Share
+   the bordered-card look with .canvas-embed above. */
+.file-embed {
+    border: 1px solid var(--darker);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin: var(--space-lg) 0;
+    background: var(--bg-color);
+}
+.file-embed-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--lighter);
+    background: var(--lightest);
+    font-size: var(--text-sm);
+}
+.file-embed-title { font-weight: 600; color: var(--fg-color); }
+.file-embed-open { color: var(--darkest); text-decoration: none; white-space: nowrap; }
+.file-embed-open:hover { text-decoration: underline; }
+.file-embed-note {
+    padding: var(--space-xs) var(--space-sm);
+    border-top: 1px solid var(--lighter);
+    background: var(--lightest);
+    color: var(--darkest);
+    font-size: var(--text-xs);
+}
+.file-embed-error { padding: var(--space-lg); color: var(--color-danger); font-size: var(--text-smd); }
+
+/* CSV/TSV preview: scrollable table with a sticky header and zebra rows. */
+.csv-embed-body { max-height: 28em; overflow: auto; }
+.csv-embed-table { border-collapse: collapse; width: 100%; font-size: var(--text-sm); }
+.csv-embed-table th,
+.csv-embed-table td {
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--lighter);
+    text-align: left;
+    white-space: nowrap;
+    vertical-align: top;
+}
+.csv-embed-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--lighter);
+    color: var(--fg-color);
+    font-weight: 600;
+    z-index: 1;
+}
+.csv-embed-table tbody tr:nth-child(even) { background: var(--lightest); }
+
+/* PDF preview: full-width iframe inside the card. */
+.pdf-embed-frame { display: block; width: 100%; border: 0; background: var(--lightest); }
+
+/* ---- Markdown include embeds (![[Page]] / ![[Page#Heading]] / ![[Page#^blk]]) ----
+   Transclusion: the referenced page is rendered independently and framed here,
+   Obsidian-style. Shares the bordered-card look with the canvas/file embeds. */
+.md-transclusion {
+    border: 1px solid var(--darker);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin: var(--space-lg) 0;
+    background: var(--bg-color);
+}
+.md-transclusion-title {
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--lighter);
+    background: var(--lightest);
+    font-size: var(--text-sm);
+    font-weight: 600;
+}
+.md-transclusion-title a { color: var(--fg-color); text-decoration: none; }
+.md-transclusion-title a:hover { text-decoration: underline; }
+/* Included content keeps its own flow; trim the outer margins so it sits flush
+   inside the frame instead of doubling the card padding. */
+.md-transclusion-body { padding: var(--space-sm) var(--space-md); }
+.md-transclusion-body > :first-child { margin-top: 0; }
+.md-transclusion-body > :last-child { margin-bottom: 0; }
+
+/* Notice shown in place of a broken include (missing page/section, cycle, or
+   depth cap) - subdued warning callout so it's visible but not alarming. */
+.md-transclusion-notice {
+    border: 1px solid var(--color-warning);
+    border-left-width: 4px;
+    border-radius: var(--radius-sm);
+    background: var(--color-warning-bg);
+    padding: var(--space-sm) var(--space-md);
+    color: var(--fg-color);
+    font-size: var(--text-smd);
+}
+.md-transclusion-notice-icon { color: var(--color-warning); }
+}
+
+/* Full-viewport layout used by fullwidth.html (canvas, future PDF viewer).
+   Activated by `class="fullwidth"` on <body>. Do NOT switch this to
+   `body:has(#fullwidth_content)` - root-level :has() forced full-page
+   style re-evaluation on every canvas DOM mutation, freezing the browser. */
+body.fullwidth {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    margin: 0;
+    overflow: hidden;
+}
+body.fullwidth #fullwidth_content {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+}
+body.fullwidth #canvas_root {
+    flex: 1 1 auto;
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* In the fullwidth flex column, #document_header must not grow or shrink -
+   it takes its natural content height (the favicon is positioned out of flow
+   below, so there is no float to inflate the BFC). */
+body.fullwidth #document_header {
+    flex: 0 0 auto;
+}
+
+/* #canvas_root is a positioned sibling that comes after the header in DOM
+   order, so by default it paints over the header's (and footer's) hamburger
+   dropdown. Lift the header/footer into their own higher stacking context so
+   the open menu sits above the canvas. */
+body.fullwidth #document_header,
+body.fullwidth #document_footer {
+    position: relative;
+    z-index: 100;
+}
+
+/* In the fullwidth flex column the footer's normal margin-top (5em, used to
+   separate article content from the footer on document pages) becomes a dead
+   gap: it's main-axis space the flex:1 on #fullwidth_content cannot absorb
+   (flex-grow only distributes *free* space, not a sibling's margin), so the
+   page background shows between the canvas and the footer. Zero it here so the
+   canvas surface fills down to the footer. */
+body.fullwidth #document_footer {
+    margin-top: 0;
+}
+

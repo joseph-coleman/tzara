@@ -1,0 +1,10 @@
+services:
+  ollamaserver:
+    # No need to repeat image/volumes; they are inherited from the base file.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

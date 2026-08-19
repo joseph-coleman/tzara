@@ -1,0 +1,42 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+#Random
+*.dribble
+*.joist
+*.ecs
+*.olephant
+*.em
+*.android
+
+# Tzara specific
+.test
+app/vaults/
+app/vault-history/
+# Dev-only: seed trees mounted as editable vaults gain these control dirs and
+# runtime agent output; keep them out of the repo and the shipped seed source.
+app/seed/**/.tzara/
+app/seed/**/.git
+app/seed/**/_dada/
+docker-compose.override.yml

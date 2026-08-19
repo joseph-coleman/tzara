@@ -1,0 +1,47 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+{% extends "base.html" %}
+
+{% block toc %}{% endblock toc %}
+
+{% block content %}
+{% set v = vault|default('main', true) %}
+<div id="search-page">
+
+    <form action="/search/{{v}}" method="get" class="search-page-form">
+        <input type="search" name="q" placeholder="Search the wiki..." class="search-page-input" value="{{ search_query|default('', true)|e }}" autofocus>
+        <button type="submit" class="search-page-button">Search</button>
+    </form>
+
+    {% if search_query %}
+    <div class="search-meta">
+        {{ results|length }} result{{ 's' if results|length != 1 else '' }} for <strong>{{ search_query|e }}</strong>
+        {% if search_time %}<span class="search-timing">({{ search_time }})</span>{% endif %}
+    </div>
+
+    {% if results %}
+    <div class="search-results">
+        {% for r in results %}
+        <div class="search-result">
+            <h3><a href="/wiki/{{ r.url_path|e }}">{{ r.title|e }}</a></h3>
+            {% if r.header_path %}<small class="search-section">{{ r.header_path|e }}</small>{% endif %}
+            {% if r.snippet %}<p class="search-snippet">{{ r.snippet|e }}</p>{% endif %}
+            <small class="search-source">
+                {% if r.source == "graph" %}via linked document{% elif r.source == "semantic" %}semantic match{% elif r.source == "fulltext" %}text match ({{ r.match_count }}){% endif %}
+            </small>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p>No results found.</p>
+    {% endif %}
+
+    {% endif %}
+
+</div>
+{% endblock content %}

@@ -1,0 +1,46 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+{% extends "base.html" %}
+
+{# Chat responses may contain ```jupyter blocks; load codemirror + jupyter.js
+   unconditionally so those cells are interactive when they appear. #}
+{% set has_jupyter = true %}
+
+{% block toc %}{% endblock toc %}
+
+{% set v = vault|default('main', true) %}
+
+{% block base_header %}
+<script src="/template/{{theme}}/chat.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  initChat({ urlPath: '', vault: '{{ vault | default("main", true) }}', mode: 'wiki', showDocPath: true });
+});
+</script>
+{% endblock base_header %}
+
+{% block content %}
+<div id="document">
+     <p id="pagetitle" title="Converse with tzokens." >Convertzation</p>
+    <div id="chat_container" class="chat-container chat-container-fullpage">
+        <div class="chat-controls">
+            <button type="button" id="chat_reset_btn" aria-label="Reset" title="Reset"  class="chat-reset-btn chat-hidden"
+                    onclick="resetChat()">&#128260;&#65039; Reset</button>
+        </div>
+        <div id="chat_history" class="chat-history chat-history-fullpage"></div>
+        <div class="chat-input-row">
+            <textarea id="chat_input" class="chat-input" rows="2"
+                      placeholder="Ask about anything in your wiki..."></textarea>
+            <button type="button" id="chat_send_btn" aria-label="Ask" title="Ask"
+                    onclick="sendChatMessage()">&#11014;&#65039;</button>
+           
+        </div>
+    </div>
+
+</div>
+{% endblock content %}

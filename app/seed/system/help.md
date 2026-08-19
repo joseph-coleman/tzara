@@ -1,0 +1,58 @@
+# Welcome
+
+Welcome to the Tzara help pages. These live in the **system vault** and are excluded
+from search indexing, so they never pollute your own notes' retrieval.
+
+These pages are seeded once, on first run. After that they're yours - edit them,
+extend them, or delete the ones you don't need.
+
+## Contents
+
+1. [[help/configurations]] - How (and where) to configure things.
+1. [[help/basics]] - The basics of using Tzara. 
+1. [[markdown-syntax]] - The markdown you'll use every day, shown by example.
+1. [[jupyter]] - Jupyter integration details and examples.
+1. [[agents]] - Creating agents and how they work
+1. [[editors]] - Custom "/" menu commands that transform text as you edit
+
+> [!caution]
+> Agent subsystem (**OFF by default** - opt in once you understand it) 
+> Tzara can run background agents (which defined as markdown files in the system vault). They are powerful (scheduled/event-triggered runs, staged writes, sandboxed custom Python tools). Leave these disabled until you've read the authoring guide; flip to true to enable. See app/config.py for the full semantics. Can also specify in `.env`.
+>
+> **`AGENT_SCHEDULER_ENABLED=false`**
+> 
+> **`EVENT_TRIGGERS_ENABLED=false`**
+> 
+> `run_python` lets the CHAT agent execute LLM-authored code in the page kernel (approval-gated per block). Off by default because note text read via search could carry prompt-injection that steers that code. Enable only if you trust your vaults' content.
+> 
+> **`CHAT_ENABLE_RUN_PYTHON=false`**
+
+## Example agents
+
+The system vault also ships a couple of small example agents under the `agents/` directory.  Click "Help" and then [Index](/index/{{vault}}/) to see everything. 
+
+- [[vault-health]] - Demonstrates custom tools to generate a manual report of vault health, such as well well things link together, and any orphaned pages that need your attention.
+- [[nasa-apod]] - Fetches NASA's Astronomy Picture of the Day. Runs daily.
+- [[math_of_the_day]] - Creates a daily math article explaining some topic.
+- [[physics-librarian]] - Uses a bunch of built in tools to look at the `/physics` section of a wiki. A specialized version of the vault-health agent above.
+- [[physics-citation-finder]] - Companion with the Physics Librarian, but this proposes changes to pages for better external references to Wikipedia.
+- [[expanse-worldbuilder]] - This is an example of an autonomous agent that builds out pages on a regular schedule in a specifically named vault, so it is contained.  The theme of this is a role playing game based on the the book series The Expanse.
+- [[expanse-continuity-linker]] - This agent demonstrates event driven behavior. This agent run when the Expanse Worldbuilder agent finishes its work.  
+
+Open an agent's page to read its definition, then run it from the **/agents** view.
+They ship **manual-run** (no schedule), so nothing fires until you ask it to.
+
+## Example Editors
+
+The system vault also ships a couple of small example editors in the `editors/` folder here.  
+
+- [[editors/cipher]] - This is a decoder ring of sorts. Converts selected text using a simple cypher.  Select the text and run the tool again to decrypt. 
+- [[editors/research_notes]] - Given some selected text, tries to find related information in your vault of documents, and then saves the snippet of references in an external note file.
+- [[editors/british]] - Convert the spelling of the selected text from American to British for a splash of colour.
+- [[editors/tldr]] - Reads the whole document and then creates a "Too long; didn't read" block at the top of a page.
+- [[editors/equation-to-latex]] - Given a selected text equation, tries to convert it into LaTeX output for elegant typesetting.
+
+## Architecture
+
+![[architecture.canvas]]
+

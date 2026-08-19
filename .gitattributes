@@ -1,0 +1,50 @@
+# Line-ending policy for the repo root.
+#
+# Blobs are stored LF (they already are - this pins it rather than changing it);
+# the working tree gets CRLF, matching the project preference in CLAUDE.md. That
+# combination makes EOL-only differences stop showing as modified files, which is
+# the same trick app/seed/*/.gitattributes already uses for markdown/canvas
+# (Obsidian writes CRLF, the container writes LF).
+#
+# The exceptions below matter more than the default: they are the files that are
+# read by Linux tooling, where a stray CR is not cosmetic but fatal.
+
+* text=auto eol=crlf
+
+# --- Must be LF -------------------------------------------------------------
+
+# Shell scripts run in WSL and inside the containers. With a shebang, a CR makes
+# the kernel look for an interpreter literally named "bash\r":
+#   /usr/bin/env: 'bash\r': No such file or directory
+# Without a shebang the failure is quieter and worse - the script runs, but every
+# argument carries a trailing CR (docker-compose kill $'tzaraserver\r'), so
+# commands fail against service names that look correct on screen.
+# This has already bitten refresh-docs.sh, rebuild.sh and screenshot.sh.
+*.sh text eol=lf
+
+# Copied to .env by setup.sh/setup.ps1 and then parsed by compose's env_file and
+# by shell `cut`/`sed` readers. Keep it LF so no value can pick up a trailing CR
+# (POSTGRES_PASSWORD in particular is baked into the Postgres volume on first
+# init and can never be corrected afterward).
+.env.template text eol=lf
+
+# --- Windows-native: CRLF is correct ----------------------------------------
+# Redundant given the default above, but stated so the intent survives any later
+# change to that default.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# --- Never transform --------------------------------------------------------
+# `text=auto` already detects these by content; listed explicitly so a future
+# blanket rule cannot corrupt them.
+*.png  binary
+*.ico  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary

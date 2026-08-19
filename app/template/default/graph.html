@@ -1,0 +1,279 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+{% extends "fullwidth.html" %}
+{% import "_canvas_theme.html" as ct %}
+
+{% block base_header %}
+<script src="/template/{{theme}}/tzara-canvas.js"></script>
+{# Shared theme bridge (see _canvas_theme.html). The graph softens the default
+   edge stroke because its connectors are auto-generated wikilinks, not
+   user-drawn edges - the one token that differs from the editor/embed. #}
+{{ ct.canvas_theme('#canvas_root', edge_stroke='rgb(from var(--darker) r g b / 0.42)') }}
+<style>
+/* Graph nodes are navigation chips: center the link, hide the marker scrollbar. */
+#canvas_root .canvas-node a { color: var(--fg-color); text-decoration: none; }
+#canvas_root .canvas-node a:hover { text-decoration: underline; }
+/* Paper-card depth + smooth dim/undim driven by the hover-highlight script. */
+#canvas_root .canvas-node {
+  box-shadow: 0 1px 4px rgb(from var(--darker) r g b / 0.22);
+  transition: opacity 0.14s ease, box-shadow 0.14s ease;
+}
+
+/* ---- Graph page chrome (control bar + legend) ----------------------------
+   Overlays are absolutely positioned inside #fullwidth_content (made the
+   containing block below) so they float over the canvas, out of the flex flow,
+   and sit just under the site header. Page-specific styles live here per the
+   project's inline-page-CSS convention. */
+body.fullwidth #fullwidth_content { position: relative; }
+
+.graph-overlay {
+  position: absolute;
+  z-index: 50;  /* above canvas content (groups use ~10), below header (100) */
+  font-family: Helvetica, Arial, system-ui, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.85rem;
+  color: var(--fg-color);
+}
+
+#graph_controls {
+  top: 12px; left: 12px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  max-width: calc(100% - 24px);
+  padding: 8px 12px;
+  background: var(--bg-color);
+  border: 1px solid var(--lighter);
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgb(from var(--darkest) r g b / 0.18);
+}
+#graph_controls .graph-title { font-weight: 600; white-space: nowrap; }
+#graph_controls .graph-sep { align-self: stretch; width: 1px; background: var(--lighter); }
+#graph_controls label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+#graph_controls select,
+#graph_controls input[type="search"] {
+  font: inherit; color: var(--fg-color);
+  background: var(--lightest);
+  border: 1px solid var(--lighter); border-radius: 6px; padding: 3px 7px;
+}
+#graph_controls input[type="search"] { min-width: 160px; }
+#graph_controls input[type="search"]:focus,
+#graph_controls select:focus { outline: 2px solid var(--base-color); outline-offset: 0; }
+#graph_controls button,
+#graph_controls a.graph-btn {
+  font: inherit; cursor: pointer; text-decoration: none;
+  color: var(--fg-color); background: var(--lightest);
+  border: 1px solid var(--lighter); border-radius: 6px; padding: 4px 10px;
+}
+#graph_controls button:hover,
+#graph_controls a.graph-btn:hover { background: var(--lighter); }
+#graph_controls input[type="checkbox"] { accent-color: var(--base-color); width: 15px; height: 15px; }
+
+#graph_legend {
+  bottom: 14px; left: 12px;
+  padding: 10px 12px; line-height: 1.5;
+  background: rgb(from var(--bg-color) r g b / 0.92);
+  border: 1px solid var(--lighter);
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgb(from var(--darkest) r g b / 0.18);
+}
+#graph_legend .legend-title { font-weight: 600; margin-bottom: 4px; }
+#graph_legend .legend-row { display: flex; align-items: center; gap: 7px; }
+#graph_legend .legend-swatch {
+  flex: 0 0 auto; width: 14px; height: 14px;
+  border: 2px solid var(--darker); border-radius: 4px;
+}
+#graph_legend .legend-line { flex: 0 0 auto; width: 18px; height: 0; }
+</style>
+{% endblock base_header %}
+
+{% block fullwidth_body %}
+<div id="canvas_root"></div>
+
+<div id="graph_controls" class="graph-overlay">
+  <span class="graph-title">{{ title }}</span>
+  <span class="graph-sep"></span>
+  <input type="search" id="graph_search" list="graph_node_list" placeholder="Find page…" autocomplete="off" />
+  <datalist id="graph_node_list"></datalist>
+  <button type="button" id="graph_fit" title="Frame the whole graph">Fit</button>
+  {% if graph_mode == 'local' %}
+  <label>Depth
+    <select id="graph_depth_select">
+      {% for d in [1, 2, 3, 4] %}
+      <option value="{{ d }}"{% if d == graph_depth %} selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <a class="graph-btn" href="/graph{% if graph_tags_on %}?tags=1{% endif %}">Full graph</a>
+  {% endif %}
+  <label title="Overlay #tags as nodes"><input type="checkbox" id="graph_tags_toggle"{% if graph_tags_on %} checked{% endif %} /> Tags</label>
+</div>
+
+<div id="graph_legend" class="graph-overlay">
+  <div class="legend-title">Legend</div>
+  <div class="legend-row"><span class="legend-swatch" style="background: var(--lightest); border-color: var(--darker);"></span> Indexed page</div>
+  <div class="legend-row"><span class="legend-swatch" style="background: var(--lighter); border-color: var(--darker);"></span> Not indexed</div>
+  <div class="legend-row"><span class="legend-swatch" style="background: var(--base-180-lighter); border-color: var(--base-180-darker);"></span> Planned (linked, not created)</div>
+  <div class="legend-row"><span class="legend-swatch" style="background: var(--base-300-lighter); border-color: var(--base-300-darker);"></span> Deleted (links need fixing)</div>
+  {% if graph_tags_on %}
+  <div class="legend-row"><span class="legend-swatch" style="background: var(--base-240-lighter); border-color: var(--base-240-darker);"></span> Tag</div>
+  {% endif %}
+  <div class="legend-row"><span class="legend-line" style="border-top: 3px solid var(--base-120-darker);"></span> Embed link</div>
+</div>
+
+{# Server already validated/serialized this graph; safe to JSON.parse inline. #}
+<script id="canvas_data" type="application/json">{{ canvas_json|safe }}</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const data = JSON.parse(document.getElementById('canvas_data').textContent);
+    const root = document.getElementById('canvas_root');
+
+    // The vault this graph is scoped to (main.py passes it per request). Node
+    // hrefs are already absolute /wiki/{vault}/ links baked in by graph_canvas,
+    // but resolveFile / the /api/markdown/ <base> still need it to stay in-vault.
+    const VAULT = {{ vault|default('main', true)|tojson }};
+
+    // Draggable but NOT editable: `readOnly` bulk-disables every edit perm,
+    // then we re-enable only `dragNode` so the user can rearrange nodes (no
+    // text edit, resize, create, delete, or edge-drawing). Hide all toolbars so
+    // no editing chrome - nor the "reset to initial state" button that unlocks
+    // once an edit perm is on - appears. Drags are in-session only (the graph is
+    // generated live and never persisted). Nodes are `text` nodes whose body is
+    // a markdown link rendered via /api/markdown/, so the title shows and a
+    // (non-drag) click navigates.
+    const canvas = new TzaraCanvas.Canvas(root, data, {
+        readOnly: true,
+        permissions: { dragNode: true },
+        toolbars: { canvas: { hidden: true }, node: { hidden: true }, edge: { hidden: true } },
+        allowEmbeds: false,
+        createNodeOnDrop: false,
+        showGrid: 'off',
+        snapToGrid: false,
+        nodeAlignment: false,
+        backgroundColor: 'var(--bg-color)',
+        resolveFile: (path) => '/raw/' + VAULT + '/' + String(path || '').replace(/^\/+/, ''),
+        convertMarkdown: async (md) => {
+            const fd = new FormData();
+            fd.append('markdown', md);
+            // Scope to this graph's vault so the <base> /api/markdown/ prepends
+            // points at the right vault (node hrefs are already absolute, but a
+            // wrong-vault <base> is a page-wide relative-URL trap).
+            fd.append('document_name', 'wiki/' + VAULT + '/');
+            const r = await fetch('/api/markdown/', { method: 'POST', body: fd });
+            return await r.text();
+        },
+    });
+
+    canvas.defaultNodeStyle({
+        borderRadius: '8px',
+        fontFamily: 'Helvetica, Arial, system-ui, "Segoe UI", Roboto, sans-serif',
+    });
+
+    // The canvas may treat a pointerdown on a node as a select/drag gesture and
+    // swallow the anchor's default navigation. Intercept clicks on internal
+    // wiki links in the capture phase and navigate explicitly.
+    root.addEventListener('click', (ev) => {
+        const a = ev.target.closest && ev.target.closest('a[href^="/wiki/"]');
+        if (!a) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        window.location.href = a.getAttribute('href');
+    }, true);
+
+    // ---- Control bar wiring ------------------------------------------------
+    // Depth + tags reload the page with updated query params; mode is fixed by
+    // the route, so we mutate the *current* URL rather than rebuild it.
+    function graphNav(opts) {
+        const u = new URL(window.location.href);
+        if (opts.depth != null) u.searchParams.set('depth', String(opts.depth));
+        if (opts.tags != null) {
+            if (opts.tags) u.searchParams.set('tags', '1');
+            else u.searchParams.delete('tags');
+        }
+        window.location.assign(u.toString());
+    }
+    const depthSel = document.getElementById('graph_depth_select');
+    if (depthSel) depthSel.addEventListener('change', () => graphNav({ depth: depthSel.value }));
+    const tagsChk = document.getElementById('graph_tags_toggle');
+    if (tagsChk) tagsChk.addEventListener('change', () => graphNav({ tags: tagsChk.checked }));
+    const fitBtn = document.getElementById('graph_fit');
+    if (fitBtn) fitBtn.addEventListener('click', () => {
+        try { canvas.camera.fitAll({ padding: 60 }); } catch (e) { /* no-op */ }
+    });
+
+    // ---- Search-to-focus ---------------------------------------------------
+    // Build the title index from the source data (robust vs. internal node
+    // shape). Page titles come from the markdown link `[Title](...)`; tag nodes
+    // are plain `#tag` text.
+    const titleOf = (t) => {
+        if (!t) return '';
+        const m = /^\[([^\]]+)\]/.exec(t);
+        return m ? m[1] : t;
+    };
+    const searchIndex = (data.nodes || [])
+        .filter((n) => n.type !== 'group' && n.text)
+        .map((n) => ({ id: n.id, label: titleOf(n.text) }))
+        .filter((n) => n.label);
+    const dl = document.getElementById('graph_node_list');
+    if (dl) {
+        const seen = new Set();
+        searchIndex.forEach((n) => {
+            if (seen.has(n.label)) return;
+            seen.add(n.label);
+            const o = document.createElement('option');
+            o.value = n.label;
+            dl.appendChild(o);
+        });
+    }
+    function focusByLabel(q) {
+        q = (q || '').trim().toLowerCase();
+        if (!q) return;
+        const hit = searchIndex.find((n) => n.label.toLowerCase() === q)
+                 || searchIndex.find((n) => n.label.toLowerCase().includes(q));
+        if (!hit) return;
+        try {
+            canvas.camera.focusNode(hit.id, { zoom: 1, padding: 80 });
+            const node = canvas.getNode(hit.id);
+            if (node && node.pulse) node.pulse({ duration: 700 });
+        } catch (e) { /* no-op */ }
+    }
+    const searchInput = document.getElementById('graph_search');
+    if (searchInput) {
+        searchInput.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); focusByLabel(searchInput.value); }
+        });
+        // Fires when a datalist suggestion is picked.
+        searchInput.addEventListener('change', () => focusByLabel(searchInput.value));
+    }
+
+    // ---- Hover-highlight ---------------------------------------------------
+    // On hover, keep the node + its neighbors at full opacity and dim the rest.
+    // Edges render on one shared SVG surface (no per-edge DOM), so the effect is
+    // carried by node dimming + the lib's built-in node highlight. Inline opacity
+    // is safe: only the dragged node re-renders on a move, and it's the hovered
+    // (full-opacity) node, never one of the dimmed set; 'leave' clears the rest.
+    let dimmed = [];
+    if (canvas.on && canvas.graph) {
+        canvas.on('nodeHover', (node, dir) => {
+            if (!node || node.type === 'group') return;
+            if (dir === 'enter') {
+                const keep = new Set([node.id]);
+                let nbrs = [];
+                try { nbrs = canvas.graph.neighbors(node.id, { direction: 'both' }) || []; } catch (e) { /* no-op */ }
+                nbrs.forEach((n) => keep.add(n.id));
+                dimmed = canvas.graph.allNodes().filter((n) => n.type !== 'group' && !keep.has(n.id));
+                dimmed.forEach((n) => { if (n._dom) n._dom.style.opacity = '0.16'; });
+                if (node.highlight) node.highlight(true);
+            } else {
+                dimmed.forEach((n) => { if (n._dom) n._dom.style.opacity = ''; });
+                dimmed = [];
+                if (node.highlight) node.highlight(false);
+            }
+        });
+    }
+});
+</script>
+{% endblock fullwidth_body %}

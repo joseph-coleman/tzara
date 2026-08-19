@@ -1,0 +1,21 @@
+/*
+ * Copyright (C) 2026 Joseph E. Coleman
+ * This file is part of Tzara, licensed under the GNU Affero General
+ * Public License v3.0 or later. See LICENSE.txt.
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+/* ---------------------------------------------------------------------------
+ * theme.css  --  Theme override hook (DEFAULT THEME: intentionally empty)
+ * ---------------------------------------------------------------------------
+ * base.html loads this file LAST, after tzara.css / tzara_code.css. It is the
+ * single, drift-free extension point for a custom theme.
+ *
+ * The default theme ships it empty on purpose: the base palette already lives
+ * in tzara.css. A CUSTOM theme provides its own theme.css (in its own folder
+ * under app/template/<name>/) that overrides only the four seed tokens -- see
+ * app/template/ocean/ for a worked example, and its README.md for the how/why.
+ *
+ * Do not move the real palette here; keep tzara.css authoritative so the
+ * default site has a single source of truth.
+ * ------------------------------------------------------------------------- */

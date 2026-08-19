@@ -1,0 +1,179 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+{% extends "base.html" %}
+
+{% block toc %}
+<div id="toc">
+    {{toc}}
+    {% if tags %}
+    
+    <div class="sidebar-tags">
+        <div class="sidebar-tags-label">Tags</div>
+        <div>
+        {% for tag in tags %}<span class="sidebar-tag">{{ tag }}</span>{% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    {% if summary %}
+    <div class="sidebar-summary">
+        <div class="sidebar-summary-label">Summary</div>
+        <div class="sidebar-summary-text">{{ summary }}</div>
+    </div>
+    {% endif %}
+    {% if show_chat %}
+    <div id="sidebar-related" class="sidebar-related" style="display:none;"></div>
+    {% endif %}
+</div>
+{% endblock toc %}
+
+{% block base_header %}
+
+    <script src="/template/{{theme}}/chat.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      initChat({ urlPath: '{{ url_path | default("") }}', vault: '{{ vault | default("main", true) }}', mode: null, showDocPath: false, revision: '{{ revision | default("", true) }}' });
+    });
+    </script>
+
+    <script src="/template/{{theme}}/code_highlight.js"></script>
+
+    {% if is_index %}
+    <style>
+      /* Index file-manager (move UI). Themed with the wiki's CSS variables. */
+      #idx-toolbar {
+        position: sticky; top: 0; z-index: 20;
+        display: flex; align-items: center; gap: 0.6em;
+        margin: 0 0 0.8em 0; padding: 0.45em 0.7em;
+        background: var(--lightest); border: 1px solid var(--darker);
+        border-radius: var(--radius-md); font-size: var(--text-smd);
+      }
+      #idx-toolbar.idx-has-sel { border-color: var(--base-color); background: var(--lighter); }
+      #idx-count { font-weight: 600; min-width: 6em; }
+      #idx-toolbar button {
+        cursor: pointer; padding: 0.25em 0.7em;
+        background: var(--base-color); color: var(--foreground);
+        border: 1px solid var(--darker); border-radius: var(--radius-sm);
+      }
+      #idx-toolbar button:hover { background: var(--lighter); }
+      #idx-toolbar .idx-spacer { flex: 1 1 auto; }
+      .idx-root-drop {
+        padding: 0.25em 0.6em; border: 2px dashed var(--darker);
+        border-radius: var(--radius-sm); opacity: 0.7; transition: opacity 0.15s, border-color 0.15s, background 0.15s;
+      }
+      /* While a drag is in flight, make valid drop targets obvious. */
+      body.idx-dnd-active .idx-root-drop {
+        opacity: 1; border-color: var(--base-color);
+        background: var(--lighter); border-style: solid;
+        animation: idx-pulse 1.1s ease-in-out infinite;
+      }
+      body.idx-dnd-active #document_container li[data-type="dir"] {
+        outline: 1px dashed var(--base-color); outline-offset: 1px; border-radius: var(--radius-sm);
+      }
+      @keyframes idx-pulse {
+        0%, 100% { box-shadow: 0 0 0 3px var(--darker);  }
+        50% { box-shadow: 0 0 3px 3px var(--lighter); }
+      }
+      body.idx-dnd-active .idx-root-drop.idx-drop-hover {
+        background-color: var(--base-180-lighter);
+      }
+      .idx-root-drop.idx-drop-hover,
+      li.idx-drop-hover { outline: 2px solid var(--base-color); background: var(--lightest); }
+      /* Markers rendered INSIDE so a file's ::marker emoji and a folder's clickable
+         emoji sit at the same x (both inline, before the checkbox) - aligned. */
+      .idx-row { list-style: none; list-style-position: inside; }
+      .idx-check { margin-right: 0.45em; cursor: pointer; vertical-align: middle; }
+      .idx-row.idx-dragging { opacity: 0.50; }
+      /* The folder emoji IS the collapse/expand control (📂 open / 📁 collapsed).
+         It replaces the folder ::marker so there's no duplicate icon. */
+      .idx-diremoji {
+        cursor: pointer; user-select: none; margin-right: 0.15em;
+        vertical-align: middle;
+      }
+      .idx-diremoji:hover { filter: brightness(1.15); }
+      .idx-collapsible::marker { content: none !important; }
+      .idx-modal-overlay {
+        position: fixed; inset: 0; z-index: 100;
+        background: rgb(from var(--darkest) r g b / 0.35);
+        display: flex; align-items: center; justify-content: center;
+      }
+      .idx-modal {
+        background: var(--bg-color); color: var(--fg-color);
+        border: 1px solid var(--darker); border-radius: var(--radius-md);
+        padding: 1em 1.2em; min-width: 18em; max-height: 70vh; overflow: auto;
+        box-shadow: 0 8px 30px rgb(from var(--darkest) r g b / 0.25);
+      }
+      .idx-modal-head { font-weight: 600; margin-bottom: 0.6em; }
+      .idx-pick-filter {
+        width: 100%; box-sizing: border-box; margin: 0 0 0.6em 0;
+        padding: 0.35em 0.5em; font-size: 0.95em;
+        background: var(--lightest); color: var(--fg-color);
+        border: 1px solid var(--darker); border-radius: var(--radius-sm);
+      }
+      .idx-pick-list { list-style: none; margin: 0 0 0.8em 0; padding: 0; }
+      .idx-pick { padding: 0.35em 0.5em; border-radius: var(--radius-sm); cursor: pointer; }
+      .idx-pick:hover { background: var(--lighter); }
+      .idx-pick-create { border: 1px dashed var(--base-color); margin-bottom: 0.3em; }
+      .idx-modal-cancel {
+        cursor: pointer; padding: 0.3em 0.9em;
+        background: var(--lightest); border: 1px solid var(--darker); border-radius: var(--radius-sm);
+      }
+      #idx-toast {
+        position: fixed; bottom: 1.5em; left: 50%; transform: translateX(-50%);
+        background: var(--darkest); color: var(--bg-color);
+        padding: 0.6em 1em; border-radius: var(--radius-md); font-size: var(--text-smd);
+        opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 200;
+      }
+      #idx-toast.idx-toast-show { opacity: 0.96; }
+    </style>
+    <script>window.WIKI_VAULT = {{ vault|default('main', true)|tojson }};</script>
+    <script src="/template/{{theme}}/index.js"></script>
+    {% endif %}
+
+{% endblock base_header %}
+
+{% block content %}
+<div id="document">
+
+    {% if agent_banner %}
+    <div class="agent-owned-banner">
+        🤖 {{ agent_banner.kind|capitalize }}-owned page: Written by the <span class="agent-name">{{ agent_banner.agent }}</span>
+        {{ agent_banner.kind }} and may be overwritten on its next run. Move it out of
+        <code>{{ agent_banner.dir }}/</code> to take ownership.
+    </div>
+    {% endif %}
+
+    {% if title %}
+    <p id="pagetitle"><a href="/edit/{{ vault|default('main', true) }}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">{{title}}</a></p>
+    {% endif %}
+    {% if unlinked_title %}
+    <p id="pagetitle">{{unlinked_title}}</p>
+    {% endif %}
+
+    <div id="document_container">
+    {{ document }}
+    </div>
+
+    {% if show_chat %}
+    <hr clear="both" />
+
+    <div id="chat_container" class="chat-container">
+        <div class="chat-controls">
+            <button type="button" id="chat_reset_btn" class="chat-reset-btn chat-hidden" onclick="resetChat()">Reset</button>
+            <span class="chat-notice"></span>
+        </div>
+        <div id="chat_history" class="chat-history"></div>
+        <div class="chat-input-row">
+            <textarea id="chat_input" class="chat-input" rows="2" placeholder="Ask a question or ..."></textarea>
+            <button type="button" id="chat_send_btn" aria-label="Ask" onclick="sendChatMessage()">⬆️</button>
+        </div>
+    </div>
+    {% endif%}
+
+</div>
+
+{% endblock content %}

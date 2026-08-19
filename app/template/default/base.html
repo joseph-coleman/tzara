@@ -1,0 +1,196 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+{% import "_canvas_theme.html" as ct %}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    {% if title %}
+    <title>{{title}}</title>
+    {% elif unlinked_title %}
+    <title>{{unlinked_title}}</title>
+    {% endif %}
+    <style>@layer site, widgets;</style>
+    <link rel="stylesheet" type="text/css" href="/template/{{theme}}/tzara.css" />
+    <link rel="stylesheet" type="text/css" href="/template/{{theme}}/tzara_code.css" />
+    {# Theme override hook. This resolves to the ACTIVE theme's theme.css
+       (see wikidoc._test_existence), falling back to the default theme's
+       empty theme.css when a theme doesn't ship one. It is deliberately the
+       LAST stylesheet, so a theme's unlayered :root overrides win over the
+       layered tokens in tzara.css. A drift-free theme overrides only the 4
+       seed tokens here and copies nothing else. #}
+    <link rel="stylesheet" type="text/css" href="/template/{{theme}}/theme.css" />
+
+    {# Per-vault palette. A vault may override the same four seed tokens a theme
+       does, WITHOUT shipping a theme folder, so two vaults can share a theme and
+       still read as different places. It has to be INLINE: a stylesheet is fetched
+       as its own request with no vault context, so the values could never travel in
+       a .css file.
+
+       `html:root` is (0,1,1), which beats theme.css's plain `:root` (0,1,0)
+       regardless of document order, and unlayered beats tzara.css's `@layer site`
+       whatever its specificity. Dark mode needs nothing extra: it re-derives from
+       these seeds and only swaps --bg-color/--fg-color roles, never re-seeding.
+
+       Values are validated in vault_registry.valid_css_color -- an allowlist of
+       hex / color-function / named-color, which is load-bearing because this
+       environment renders with autoescape off AND escaping a CSS value would
+       break it. Emits nothing for a vault-less page (/vaults, /manage/*). #}
+    {% set vault_palette = vault_css_vars() %}
+    {% if vault_palette %}<style>html:root{ {{ vault_palette }} }</style>{% endif %}
+
+    {# Sitewide nav helper: the "Canvas" link in the header AND footer both need
+       this, so define it once here rather than duplicating the handler body in
+       two inline onclick attributes. #}
+    <script>
+    function newCanvas(vault) {
+        var n = (prompt('New canvas name:') || '').trim();
+        if (!n) return false;
+        if (!n.toLowerCase().endsWith('.canvas')) n += '.canvas';
+        window.location.href = '/wiki/' + vault + '/' + n.split('/').map(encodeURIComponent).join('/');
+        return false;
+    }
+    </script>
+
+    {{scripts}}
+    {{css}}
+
+    {% block base_header %}
+    {% endblock base_header %}
+
+    {# Load KaTeX whenever math can appear - either statically (has_latex) or
+       dynamically after page load: jupyter cell output (has_jupyter) and chat
+       responses (show_chat) are inserted post-load and need the same typesetter.
+       The static gate alone would leave KaTeX absent on those pages. #}
+    {% if has_latex or has_jupyter or show_chat %}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+    <script src="/template/{{theme}}/math.js"></script>
+    {% endif %}
+
+    {% if has_jupyter %}
+    <script src="/template/{{theme}}/codemirror.bundle.js"></script>
+    <script src="/template/{{theme}}/jupyter.js"></script>
+    {% endif %}
+
+    {% if has_mermaid %}
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: true
+            /*,
+                            theme: window.matchMedia(
+                                '(prefers-color-scheme: dark)'
+                            ).matches ? 'dark' : 'default' */
+        });
+    </script>
+    {% endif %}
+
+    {% if has_canvas_embed %}
+    {# Loaded only on pages that embed a .canvas (set by tzara_has_canvas_embed).
+       Each ![[Board.canvas]] became a .canvas-embed card with a mount div; this
+       hydrates every mount into a pan/zoom read-only TzaraCanvas. #}
+    <script src="/template/{{theme}}/tzara-canvas.js"></script>
+    {# .canvas-embed* card/toolbar layout now lives in tzara.css (sitewide). #}
+    {# Shared theme bridge (see _canvas_theme.html), keyed to the mount CLASS
+       because embeds can appear many times per page (no #id). Uses the solid
+       default edge stroke so an embedded board looks exactly as it does in the
+       editor. #}
+    {{ ct.canvas_theme('.canvas-embed-mount') }}
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Vault scopes /raw links for any images/files referenced inside the canvas.
+        const EMBED_VAULT = {{ vault|default('main', true)|tojson }};
+
+        document.querySelectorAll('.canvas-embed-mount[data-canvas-src]').forEach(async (mount) => {
+            try {
+                const resp = await fetch(mount.getAttribute('data-canvas-src'));
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+
+                // Pan/zoom but never editable: readOnly disables every edit
+                // permission while leaving the non-mutating perms (pan, zoom,
+                // select) live. Under readOnly the canvas toolbar is left visible
+                // and renders ONLY zoom-in / zoom-out / reset -- every other
+                // built-in button is gated on not-readOnly (see TzaraCanvas docs).
+                // We pin it bottom-right + vertical. The node/edge toolbars stay
+                // hidden (they're selection-driven editing chrome).
+                const canvas = new TzaraCanvas.Canvas(mount, data, {
+                    readOnly: true,
+                    toolbars: {
+                        canvas: { position: 'bottom-right', orientation: 'vertical' },
+                        node: { hidden: true },
+                        edge: { hidden: true },
+                    },
+                    allowEmbeds: false,
+                    createNodeOnDrop: false,
+                    showGrid: false,
+                    snapToGrid: false,
+                    nodeAlignment: false,
+                    backgroundColor: 'var(--bg-color)',
+                    resolveFile: (path) => '/raw/' + EMBED_VAULT + '/' + String(path || '').replace(/^\/+/, ''),
+                    convertMarkdown: async (md, path) => {
+                        const fd = new FormData();
+                        fd.append('markdown', md);
+                        // Carry the canvas's vault (and, for a file node, its source
+                        // path) so /api/markdown/ resolves wikilinks in THIS vault and
+                        // emits /wiki/{vault}/ hrefs. Without a document_name the server
+                        // falls back to the default vault.
+                        const rel = String(path || '').replace(/^\/+/, '');
+                        fd.append('document_name', 'wiki/' + EMBED_VAULT + '/' + rel);
+                        const r = await fetch('/api/markdown/', { method: 'POST', body: fd });
+                        return await r.text();
+                    },
+                });
+                canvas.defaultNodeStyle({
+                    borderRadius: '8px',
+                    fontFamily: 'Helvetica, Arial, system-ui, "Segoe UI", Roboto, sans-serif',
+                });
+
+                // The built-in 'reset' button resets zoom to 100% and centers,
+                // which isn't "fit to view". Swap it for a real fit-all button so
+                // the trio reads zoom-in / zoom-out / fit (matches the /graph
+                // "fit" control, which also calls camera.fitAll).
+                const cbar = canvas.ui.toolbar.canvas;
+                cbar.removeButton('reset');
+                cbar.addButton({
+                    key: 'fit',
+                    emoji: '🎯',
+                    title: 'Fit to view',
+                    onClick: ({ canvas }) => { try { canvas.camera.fitAll({ padding: 40 }); } catch (e) { /* no-op */ } },
+                }, { after: 'zoomOut' });
+
+                // Frame the whole board within the fixed embed height.
+                try { canvas.camera.fitAll({ padding: 40 }); } catch (e) { /* no-op */ }
+            } catch (e) {
+                mount.innerHTML = '<div class="canvas-embed-error">Could not load canvas.</div>';
+            }
+        });
+    });
+    </script>
+    {% endif %}
+
+</head>
+<body class="{% block body_class %}{% endblock body_class %}">
+    {% include "_header.html" %}
+
+    {% block toc %}{{ toc }}{% endblock toc %}
+
+    {% block content %}{{ content }}{% endblock content %}
+
+    {% include "_footer.html" %}
+
+    {# Nav alert badges - CSS + the single polling script, emitted once. The
+       badge markup itself (nav_badge.link(...)) can appear in any nav; one
+       fetch of /api/nav/badges feeds every badge on the page. #}
+    {% import "_nav_badge.html" as nav_badge %}
+    {{ nav_badge.assets() }}
+</body>
+
+</html>

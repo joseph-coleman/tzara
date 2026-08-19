@@ -1,0 +1,88 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+{#
+   Single source of truth for the TzaraCanvas -> tzara theme bridge, shared by
+   every page that mounts a TzaraCanvas: the canvas editor (canvas.html), the
+   link graph (graph.html), and inline canvas embeds (base.html). Before this
+   partial the 41-token map was copy-pasted into all three and had to be kept in
+   sync by hand; now they all call canvas_theme().
+
+   Why it works (the load-bearing part): the emitted block is an UNLAYERED inline
+   <style>, so it beats tzara-canvas's own unlayered --tc-* defaults that the
+   library injects into <head> at runtime -- anything placed inside tzara.css's
+   `@layer site` would silently lose to those. Callers pass a `selector` with
+   enough specificity to outrank the library's own `.tzara-canvas-root` (0-1-0):
+   `#canvas_root` (id, 1-0-0) for the single-canvas pages, or a class for embeds
+   (many canvases per page, so no id). Every value delegates to a tzara design
+   token, and those tokens already flip in dark mode -- so the canvas inherits
+   tzara's light/dark switching for free, with no dark block needed here.
+
+   Only `--tc-edge-stroke-default` varies between callers, so it's a parameter:
+   the editor + embeds use the solid default (edges look as authored); the graph
+   softens it because its edges are auto-generated wikilinks, not drawn by a user.
+#}
+{% macro canvas_theme(selector, edge_stroke='var(--darker)') %}
+<style>
+{{ selector }} {
+  /* Surfaces (toolbar, panels, picker, switch track) */
+  --tc-surface: var(--bg-color);
+  --tc-surface-hover: var(--lightest);
+  --tc-surface-active: var(--lighter);
+  --tc-surface-danger-hover: var(--color-danger-bg);
+  --tc-btn-bg: var(--lightest);
+  --tc-btn-hover: var(--lighter);
+  /* Borders / dividers */
+  --tc-border: var(--darker);
+  --tc-border-muted: var(--lighter);
+  --tc-divider: var(--darker);
+  /* Text */
+  --tc-text: var(--fg-color);
+  --tc-text-on-accent: var(--contrast-color);
+  /* Accent / focus - tzara's signature amber (matches primary buttons) */
+  --tc-accent: var(--base-color);
+  --tc-edge-preview: var(--base-color);
+  /* Shadows */
+  --tc-shadow: rgb(from var(--darker) r g b / 0.35);
+  --tc-selection-shadow: rgb(from var(--darkest) r g b / 0.5);
+  /* Edges / arrows / marquee */
+  --tc-arrow-fill: var(--fg-color);
+  --tc-marquee-fill: rgb(from var(--base-color) r g b / 0.25);
+  --tc-marquee-stroke: var(--darker);
+  --tc-marquee-line-width: 1px;
+  /* Snap guides - complement reads clearly against amber */
+  --tc-guide-stroke: var(--complement);
+  /* Grid (dots, subtle warm paper texture) */
+  --tc-grid-dot: rgb(from var(--darker) r g b / 0.25);
+  --tc-grid-dot-major: rgb(from var(--darker) r g b / 0.5);
+  --tc-grid-stroke: rgb(from var(--darker) r g b / 0.12);
+  --tc-grid-stroke-major: rgb(from var(--darker) r g b / 0.25);
+  /* Scrollbars (node bodies, panels) */
+  --tc-scrollbar-thumb: var(--darker);
+  --tc-scrollbar-thumb-hover: var(--darkest);
+
+  /* Default node preset - paper card */
+  --tc-node-bg-default: var(--lightest);
+  --tc-node-border-default: var(--darker);
+  --tc-edge-stroke-default: {{ edge_stroke }};
+
+  /* Presets 1-6 harmonized into tzara's hue-rotated families instead of
+     stock Obsidian primaries (1 red->300, 2 orange->60, 3 yellow->amber,
+     4 green->120, 5 teal->180, 6 purple->240). The keys still round-trip to
+     .canvas; only the rendered look changes. */
+  --tc-color-1-bg: var(--base-300-lighter); --tc-color-1-border: var(--base-300-darker);
+  --tc-color-2-bg: var(--lighter);          --tc-color-2-border: var(--darker);
+  --tc-color-3-bg: var(--base-60-lighter);  --tc-color-3-border: var(--base-60-darker);
+  --tc-color-4-bg: var(--base-120-lighter); --tc-color-4-border: var(--base-120-darker);
+  --tc-color-5-bg: var(--base-180-lighter); --tc-color-5-border: var(--base-180-darker);
+  --tc-color-6-bg: var(--base-240-lighter); --tc-color-6-border: var(--base-240-darker);
+}
+
+/* Default-preset node text isn't set inline by the library; pin it to the
+   foreground token so it stays legible on the paper card in both modes. */
+{{ selector }} .canvas-node { color: var(--fg-color); }
+</style>
+{% endmacro %}

@@ -1,0 +1,158 @@
+{
+  "nodes": [
+    {
+      "id": "bea5ce109c1ebf5c",
+      "x": 313.5,
+      "y": 514,
+      "width": 150,
+      "height": 80,
+      "type": "text",
+      "text": "Browser",
+      "color": "5"
+    },
+    {
+      "id": "49ad35a2660d6394",
+      "x": 313.5,
+      "y": 734,
+      "width": 150,
+      "height": 80,
+      "type": "text",
+      "text": "Ollama\n(LLM)",
+      "color": "6"
+    },
+    {
+      "id": "c3a5393fb02c778e",
+      "x": 533.5,
+      "y": 734,
+      "width": 150,
+      "height": 80,
+      "type": "text",
+      "text": "Redis\n(task broker)",
+      "color": "6"
+    },
+    {
+      "id": "cf87fc52e6c0ef55",
+      "x": 753.5,
+      "y": 734,
+      "width": 150,
+      "height": 80,
+      "type": "text",
+      "text": "PostgreSQL\n+ pgvector",
+      "color": "6"
+    },
+    {
+      "id": "34658401eb8c5f06",
+      "x": 753.5,
+      "y": 954,
+      "width": 150,
+      "height": 80,
+      "type": "text",
+      "text": "Jupyter\n(agent tools)",
+      "color": "3"
+    },
+    {
+      "id": "fa955b37833ae9f0",
+      "x": 753.5,
+      "y": 514,
+      "width": 150,
+      "height": 80,
+      "type": "text",
+      "text": "Jupyter\n(page cells)",
+      "color": "3"
+    },
+    {
+      "id": "24d97521924a11b6",
+      "x": 533.5,
+      "y": 514,
+      "width": 150,
+      "height": 80,
+      "type": "text",
+      "text": "Tzara\n(web server)",
+      "color": "#76dada"
+    },
+    {
+      "id": "4196975a1b14ed51",
+      "x": 533.5,
+      "y": 954,
+      "width": 150,
+      "height": 80,
+      "type": "text",
+      "text": "Worker\n(taskiq)",
+      "color": "#76dada"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1browser2tzara00",
+      "fromNode": "bea5ce109c1ebf5c",
+      "toNode": "24d97521924a11b6",
+      "fromSide": "right",
+      "toSide": "left",
+      "toEnd": "none"
+    },
+    {
+      "id": "e2tzara2jupyter000",
+      "fromNode": "24d97521924a11b6",
+      "toNode": "fa955b37833ae9f0",
+      "fromSide": "right",
+      "toSide": "left",
+      "toEnd": "none"
+    },
+    {
+      "id": "e3tzara2ollama0000",
+      "fromNode": "24d97521924a11b6",
+      "toNode": "49ad35a2660d6394",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "toEnd": "none"
+    },
+    {
+      "id": "e4tzara2redis00000",
+      "fromNode": "24d97521924a11b6",
+      "toNode": "c3a5393fb02c778e",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "toEnd": "none"
+    },
+    {
+      "id": "e5tzara2postgres00",
+      "fromNode": "24d97521924a11b6",
+      "toNode": "cf87fc52e6c0ef55",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "toEnd": "none"
+    },
+    {
+      "id": "e6worker2ollama000",
+      "fromNode": "4196975a1b14ed51",
+      "toNode": "49ad35a2660d6394",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "toEnd": "none"
+    },
+    {
+      "id": "e7worker2redis0000",
+      "fromNode": "4196975a1b14ed51",
+      "toNode": "c3a5393fb02c778e",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "toEnd": "none"
+    },
+    {
+      "id": "e8worker2postgres0",
+      "fromNode": "4196975a1b14ed51",
+      "toNode": "cf87fc52e6c0ef55",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "toEnd": "none"
+    },
+    {
+      "id": "e9worker2jupagent0",
+      "fromNode": "4196975a1b14ed51",
+      "toNode": "34658401eb8c5f06",
+      "fromSide": "right",
+      "toSide": "left",
+      "toEnd": "none"
+    }
+  ]
+}

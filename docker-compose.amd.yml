@@ -1,0 +1,7 @@
+services:
+  ollamaserver:
+    # AMD often requires the specific ROCm image tag
+    image: ollama/ollama:rocm
+    devices:
+      - "/dev/kfd"
+      - "/dev/dri"

@@ -1,0 +1,26 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+{% extends "base.html" %}
+
+{# Full-viewport layout: no sidebar TOC, content fills the space between
+   header and footer. Reusable for canvas, embedded PDFs, etc. Pages
+   extending this should fill the {% block fullwidth_body %} block.
+
+   The body class (not :has()) is what activates the layout in CSS;
+   :has() on body causes catastrophic perf because every DOM mutation
+   forces a full re-evaluation. #}
+
+{% block body_class %}fullwidth{% endblock %}
+
+{% block toc %}{% endblock toc %}
+
+{% block content %}
+<div id="fullwidth_content">
+    {% block fullwidth_body %}{% endblock fullwidth_body %}
+</div>
+{% endblock content %}

@@ -1,0 +1,102 @@
+/*
+ * Copyright (C) 2026 Joseph E. Coleman
+ * This file is part of Tzara, licensed under the GNU Affero General
+ * Public License v3.0 or later. See LICENSE.txt.
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+/* ===========================================================================
+ * Sage  --  a full-width Tzara theme in pastel, muted green
+ * ===========================================================================
+ * Two things at once, both from this single file (no .html copied):
+ *
+ *   1. COLOR (drift-free, Tier 1): override the four seed tokens. See
+ *      app/template/ocean/README.md for the full explanation of why four
+ *      tokens re-tint everything in both light and dark mode.
+ *
+ *   2. LAYOUT (Tier 2 -- a little drift risk): a handful of CSS rules turn the
+ *      centred ~800px column into a full-width page, drop the sidebar table of
+ *      contents, and move the page's tags + summary to the bottom.
+ *
+ * Activate with:   TZARA_TEMPLATE=sage
+ *
+ * DRIFT NOTE: the layout rules below target ids/classes the default template
+ * emits today (#document, #toc, .toc, #search-page, .sidebar-*). They copy no
+ * markup, so they can't go stale on content or feature changes -- but if a
+ * future release renames one of those hooks, re-check this section. That is the
+ * "maybe a little drift" trade for restyling layout instead of just color.
+ * ------------------------------------------------------------------------- */
+
+/* ---- Color: pastel, muted green ---------------------------------------- */
+:root {
+    --base-color: #9cc3a4;      /* soft sage; nav/accents derive their shades  */
+    --background: #f1f6ef;      /* pale green-tinted paper (light-mode surface) */
+    --foreground: #1f2a22;      /* deep muted green-grey ink                    */
+    --base-link-color: #a15c3e; /* muted terracotta: reads clearly against green */
+}
+
+/* ---- Full-width layout --------------------------------------------------- *
+ * The default centres #document in min(80%,800px) and floats a faint #toc in
+ * the left gutter. We stack the page as a flex column so we can reorder the
+ * (tags/summary) block to the bottom, then let content fill the width.
+ *
+ * body.fullwidth (canvas / graph) has its own higher-specificity flex layout
+ * and carries no #document/#toc, so none of this touches those pages.
+ * ------------------------------------------------------------------------- */
+body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+#document_header { order: 0; }
+#document        { order: 1; }
+#toc             { order: 2; }   /* now the tags/summary footer block */
+#document_footer { order: 3; }
+
+/* Content uses the full width, with side gutters that grow on wide screens. */
+#document {
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 1.5em clamp(1em, 5vw, 6em) 4em;
+}
+
+/* Search page gets the same treatment. (The default caps it at 50em, which is
+   also why search renders slightly wider than a document's 800px -- here they
+   simply match by both being full width.) */
+#search-page {
+    max-width: none;
+    margin: 0;
+    padding: 1.5em clamp(1em, 5vw, 6em) 4em;
+}
+
+/* #toc becomes a normal full-width block at the foot of the page: undo the
+   sidebar behaviour (float, gutter width, sticky, faint-until-hover), then lay
+   its surviving children (tags + summary) out side by side when there's room. */
+#toc {
+    float: none;
+    clear: none;
+    width: auto;
+    max-width: none;
+    position: static;
+    max-height: none;
+    overflow: visible;
+    opacity: 1;
+    filter: none;
+    padding: 1em clamp(1em, 5vw, 6em) 3em;
+    border-top: 1px solid var(--lighter);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5em 3em;
+    align-items: flex-start;
+}
+
+/* Drop the table of contents itself (keep tags + summary). */
+#toc > .toc {
+    display: none;
+}
+#toc .sidebar-tags,
+#toc .sidebar-summary {
+    margin-top: 0;
+    max-width: 45em;
+}

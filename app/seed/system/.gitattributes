@@ -1,0 +1,4 @@
+# Store LF in the repo, check out CRLF in the working tree for markdown/canvas.
+# EOL-only differences stop showing as diffs (Obsidian CRLF vs container LF).
+*.md text eol=crlf
+*.canvas text eol=crlf

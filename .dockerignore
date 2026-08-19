@@ -1,0 +1,39 @@
+# Exclude the project virtual environment from image builds
+.venv
+
+# Version control
+.git/
+.gitignore
+
+# Python cache. The `**/` is load-bearing: a .dockerignore pattern without it
+# matches only at the CONTEXT ROOT (Go filepath.Match, unlike .gitignore), so
+# the bare `__pycache__/` this replaces let app/src/__pycache__ bake into every
+# image -- ~1.9MB of bytecode, including stale .pyc from an older interpreter.
+# `**/` covers the root too, so it needs no bare companion.
+**/__pycache__/
+**/*.py[oc]
+
+# IDE
+.vscode/
+.idea/
+
+# Local config & secrets: delivered at RUNTIME via compose `env_file: .env`,
+# never baked into an image layer. Keeping .env out of the build context means
+# passwords / host IPs don't leak into image history and config changes don't
+# require a rebuild.
+.env
+
+# Dev-only scratch that has no business in the image
+.test/
+app/.test/
+.pymdwiki-chrome-profile/
+.tzara-chrome-profile/
+*.png
+app/vaults/
+# Dev-only control dirs written into the seed tree when mounted as vaults.
+# _dada/ is agent OUTPUT, not seed content: _seed_vault_tree walks the tree
+# unfiltered, so anything baked in here gets copied into every new vault.
+app/seed/**/.tzara/
+app/seed/**/.git
+app/seed/**/_dada/
+docker-compose.override.yml

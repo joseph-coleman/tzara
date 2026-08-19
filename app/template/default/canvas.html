@@ -1,0 +1,160 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+{% extends "fullwidth.html" %}
+{% import "_canvas_theme.html" as ct %}
+
+{% block base_header %}
+<script src="/template/{{theme}}/tzara-canvas.js"></script>
+{# TzaraCanvas -> tzara theme bridge. Shared with graph.html and inline canvas
+   embeds (base.html); see _canvas_theme.html for the full rationale. #}
+{{ ct.canvas_theme('#canvas_root') }}
+{% endblock base_header %}
+
+{% block fullwidth_body %}
+<div id="canvas_root"></div>
+
+{# Canvas JSON is embedded inline as a typed script block so the JS can
+   parse it without a second round-trip. Server already validated the JSON
+   before rendering, so this is safe to JSON.parse. #}
+<script id="canvas_data" type="application/json">{{ canvas_json|safe }}</script>
+
+<script>
+// Document identifier the auto-save posts back to /save/ (same value the
+// markdown edit form uses as document_name, e.g. "wiki/Foo/bar.canvas").
+const DOC_NAME = {{ doc_name|tojson }};
+// The vault this canvas lives in -- scopes the file/image pickers and /raw links.
+const VAULT = {{ vault|default('main', true)|tojson }};
+
+document.addEventListener('DOMContentLoaded', () => {
+    const data = JSON.parse(document.getElementById('canvas_data').textContent);
+    const root = document.getElementById('canvas_root');
+
+    // Prefetch-and-filter pattern: one fetch per kind, then synchronous
+    // substring filtering on every keystroke. tzara-canvas awaits the
+    // callback return, so returning a Promise on first call is fine.
+    let _filesCache = null;
+    let _imagesCache = null;
+    const ensureFiles = () => _filesCache ??= fetch('/api/files?vault=' + encodeURIComponent(VAULT)).then(r => r.json());
+    const ensureImages = () => _imagesCache ??= fetch('/api/images?vault=' + encodeURIComponent(VAULT)).then(r => r.json());
+
+    // --- Auto-save (Obsidian-style) -------------------------------------
+    //
+    // tzara-canvas fires `dataChange` after any persisted mutation (move,
+    // resize, edit, add/delete, undo/redo) but NOT for pan/zoom (that's
+    // `viewportChange`), so subscribing here gives "save on edit, ignore
+    // navigation" for free.
+    //
+    // Two tiers, decoupled on purpose:
+    //   * debounced WRITE  -> POST without save_version: durable disk write,
+    //     no git commit, no RAG churn (server skips .canvas ingest).
+    //   * CHECKPOINT       -> POST with save_version=True: one git commit.
+    //     Fired by the toolbar Save button and on page-leave.
+    // `dirty` tracks "changed since the last checkpoint commit", so leaving
+    // the page always leaves a git record.
+    const WRITE_DEBOUNCE_MS = 2000;
+    let dirty = false;
+    let writeTimer = null;
+
+    const buildForm = (withVersion) => {
+        const fd = new FormData();
+        fd.append('markdown', canvas.io.toJSONString());
+        fd.append('document_name', DOC_NAME);
+        fd.append('redirect', 'false');
+        if (withVersion) fd.append('save_version', 'True');
+        return fd;
+    };
+
+    // Durable write, no commit. keepalive lets an in-flight write survive a
+    // quick navigation. Does not clear `dirty` (no checkpoint happened).
+    const writeNow = () => {
+        clearTimeout(writeTimer);
+        writeTimer = null;
+        return fetch('/save/', {
+            method: 'POST',
+            body: buildForm(false),
+            keepalive: true,
+        }).catch(() => { /* best-effort; leave-time beacon is the backstop */ });
+    };
+
+    const scheduleWrite = () => {
+        clearTimeout(writeTimer);
+        writeTimer = setTimeout(writeNow, WRITE_DEBOUNCE_MS);
+    };
+
+    // Explicit git checkpoint. Returned promise keeps the toolbar Save button
+    // disabled until it resolves; on success the change is committed.
+    const checkpoint = () =>
+        fetch('/save/', { method: 'POST', body: buildForm(true), keepalive: true })
+            .then(() => { dirty = false; });
+
+    // Page-leave flush: sendBeacon is the reliable transport during unload.
+    // Commit a checkpoint so navigating away always records a git version.
+    const flushOnLeave = () => {
+        if (!dirty) return;
+        clearTimeout(writeTimer);
+        writeTimer = null;
+        navigator.sendBeacon('/save/', buildForm(true));
+        dirty = false;
+    };
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushOnLeave();
+    });
+    window.addEventListener('pagehide', flushOnLeave);
+
+    const canvas = new TzaraCanvas.Canvas(root, data, {
+        readOnly: false,
+        snapToGrid: false,
+        nodeAlignment: false,
+        allowEmbeds: true,
+        // Theme: subtle dot grid + viewport fill from the tzara token.
+        // CSS var() resolves here because the library sets it as an inline
+        // style on #canvas_root, which inherits --bg-color from :root (and
+        // it flips with the page in dark mode).
+        showGrid: 'dots',
+        backgroundColor: 'var(--bg-color)',
+        resolveFile: (path) => '/raw/' + VAULT + '/' + String(path || '').replace(/^\/+/, ''),
+        convertMarkdown: async (md, rawPath) => {
+            const fd = new FormData();
+            fd.append('markdown', md);
+            fd.append('format_code', 'true');
+            // Carry this canvas's vault (and a file node's source path) so wikilinks
+            // in an embedded doc resolve within THIS vault and get /wiki/{vault}/ hrefs
+            const rel = String(rawPath || '').replace(/^\/+/, '');
+            fd.append('document_name', 'wiki/' + VAULT + '/' + rel);
+            const r = await fetch('/api/markdown/', { method: 'POST', body: fd });
+            return await r.text();
+        },
+        listFiles: async (q) => {
+            const all = await ensureFiles();
+            const query = (q || '').toLowerCase();
+            return query ? all.filter(f => f.toLowerCase().includes(query)) : all;
+        },
+        listImageFiles: async (q) => {
+            const all = await ensureImages();
+            const query = (q || '').toLowerCase();
+            return query ? all.filter(f => f.toLowerCase().includes(query)) : all;
+        },
+        // Real edit (not pan/zoom): mark dirty and debounce a durable write.
+        onDataChange: () => {
+            dirty = true;
+            scheduleWrite();
+        },
+        // Toolbar Save button -> immediate git checkpoint.
+        onSaveRequest: () => checkpoint(),
+    });
+
+    // Node radius/font are written inline by the constructor, so CSS can't
+    // reach them - set them canvas-wide here to match tzara's card radius
+    // (--radius-md: 8px) and body font. Applies to existing and future nodes.
+    canvas.defaultNodeStyle({
+        borderRadius: '8px',
+        fontFamily: 'Helvetica, Arial, system-ui, "Segoe UI", Roboto, sans-serif',
+    });
+});
+</script>
+{% endblock fullwidth_body %}

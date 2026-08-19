@@ -1,0 +1,71 @@
+{#
+   Copyright (C) 2026 Joseph E. Coleman
+   This file is part of Tzara, licensed under the GNU Affero General
+   Public License v3.0 or later. See LICENSE.txt.
+   SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+{#
+   Reusable nav alert badges. Generalized from _agent_badge.html 2026-08-04 when a
+   second badge (monitor / failures) was added: a per-badge poller would have meant
+   N requests every 60s per open tab, each hitting Postgres.
+
+   ONE aggregate endpoint (/api/nav/badges) returns every count; each badge picks
+   its own out by data-badge-key. A third badge later costs zero extra requests.
+
+   Usage (delimiters spelled out so this comment stays a comment):
+     - import once per template with:  import "_nav_badge.html" as nav_badge
+     - drop a nav item with:  nav_badge.link('/agents', 'Agents', 'agents')
+     - emit CSS + script ONCE per page (base.html) with:  nav_badge.assets()
+
+   link() may appear in header AND footer: refresh() re-queries the DOM on every
+   pass, so badges rendered after the script still update. (The previous version
+   captured querySelectorAll once at script time and worked only by ordering luck.)
+#}
+
+{% macro link(href, label, key, tooltip='', kind='info') -%}
+<a class="nav-badge-link" href="{{ href }}" title="{{ tooltip }}">{{ label }}<span class="nav-badge nav-badge--{{ kind }}" data-badge-key="{{ key }}" hidden></span></a>
+{%- endmacro %}
+
+{% macro assets() -%}
+<style>
+  /* Hidden until the fetch below finds something, so a nav link doubles as a
+     passive notification. Colored from design tokens so it tracks the theme.
+     Two kinds, because they mean different things: `info` is work WAITING for
+     you (staged proposals - normal, actionable); `alert` is something BROKEN. */
+  .nav-badge {
+    display: inline-block; margin-left: var(--space-xs);
+    min-width: 1.5em; padding: 0 var(--space-xs);
+    font-size: var(--text-xs); font-weight: 700; line-height: 1.6;
+    text-align: center; color: var(--bg-color);
+    border-radius: var(--radius-pill);
+  }
+  .nav-badge--info  { background: var(--color-accent, var(--color-danger)); }
+  .nav-badge--alert { background: var(--color-danger); }
+  .nav-badge[hidden] { display: none; }
+</style>
+<script>
+  (function () {
+    // One request serves every badge on the page, polled so something that
+    // breaks while the user sits on a page still surfaces without a reload.
+    async function refresh() {
+      const badges = document.querySelectorAll('.nav-badge');
+      if (!badges.length) return;
+      try {
+        const r = await fetch('/api/nav/badges');
+        if (!r.ok) return;
+        const data = await r.json();
+        badges.forEach(function (b) {
+          const d = data[b.dataset.badgeKey] || {};
+          const n = d.count || 0;
+          if (!n) { b.hidden = true; return; }
+          b.textContent = n > 99 ? '99+' : String(n);
+          if (d.title) { b.title = d.title; }
+          b.hidden = false;
+        });
+      } catch (e) { /* transient - leave the badges as-is */ }
+    }
+    refresh();
+    setInterval(refresh, 60000);
+  })();
+</script>
+{%- endmacro %}

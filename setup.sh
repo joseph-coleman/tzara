@@ -45,11 +45,17 @@ echo ".env already exists; using it."
 # `ollama-init` actually pulls even when .env omits these.
 env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]'; }
 
+# LLM_* replaced OLLAMA_* when Tzara stopped being Ollama-only; read the new name
+# first and fall back to the old one, matching config.py and the compose defaults.
+llm_env_val() { v="$(env_val "$1")"; [ -n "$v" ] || v="$(env_val "$2")"; printf '%s' "$v"; }
+
 PORT="$(env_val PORT)";                        PORT="${PORT:-8000}"
-CHAT_MODEL="$(env_val OLLAMA_MODEL)";          CHAT_MODEL="${CHAT_MODEL:-llama3.2:3b}"
-EMBED_MODEL="$(env_val OLLAMA_EMBED_MODEL)";   EMBED_MODEL="${EMBED_MODEL:-embeddinggemma:300m}"
+CHAT_MODEL="$(llm_env_val LLM_MODEL OLLAMA_MODEL)"
+CHAT_MODEL="${CHAT_MODEL:-llama3.2:3b}"
+EMBED_MODEL="$(llm_env_val LLM_EMBED_MODEL OLLAMA_EMBED_MODEL)"
+EMBED_MODEL="${EMBED_MODEL:-embeddinggemma:300m}"
 COMPOSE_FILE_VAL="$(env_val COMPOSE_FILE)"
-OLLAMA_URL_VAL="$(env_val OLLAMA_URL)"
+LLM_URL_VAL="$(llm_env_val LLM_URL OLLAMA_URL)"
 
 # The external-inference overlay puts the local ollamaserver AND the ollama-init
 # model-pull job behind an inactive Compose profile, so their images are never
@@ -57,15 +63,15 @@ OLLAMA_URL_VAL="$(env_val OLLAMA_URL)"
 EXTERNAL_INFERENCE=0
 case "$COMPOSE_FILE_VAL" in *external-inference*) EXTERNAL_INFERENCE=1 ;; esac
 
-# Stop on the easy misconfiguration: OLLAMA_URL aimed at an external server
+# Stop on the easy misconfiguration: LLM_URL aimed at an external server
 # (anything other than the in-compose `ollama` host) WITHOUT that overlay would
 # still build/start a local Ollama container and download models the user doesn't
 # need. Refuse to build so they fix .env first - no wasted images or model pulls.
 if [ "$EXTERNAL_INFERENCE" -eq 0 ]; then
-  case "$OLLAMA_URL_VAL" in
+  case "$LLM_URL_VAL" in
     ""|http://ollama:*|http://ollama|https://ollama:*|https://ollama) : ;;
     *)
-      echo "ERROR: OLLAMA_URL points at an external server ($OLLAMA_URL_VAL), but the" >&2
+      echo "ERROR: LLM_URL points at an external server ($LLM_URL_VAL), but the" >&2
       echo "external-inference overlay is not in COMPOSE_FILE. Building now would start a" >&2
       echo "LOCAL Ollama container and download models you don't need." >&2
       echo >&2
@@ -83,7 +89,7 @@ docker compose up --build -d
 echo
 echo "Tzara is starting."
 if [ "$EXTERNAL_INFERENCE" -eq 1 ]; then
-  echo "Using an external inference server (${OLLAMA_URL_VAL:-see OLLAMA_URL in .env}); the"
+  echo "Using an external inference server (${LLM_URL_VAL:-see LLM_URL in .env}); the"
   echo "local Ollama container and model-pull step are disabled - no models are downloaded."
 else
   echo "First run pulls the configured models (${CHAT_MODEL} + ${EMBED_MODEL}) via the"

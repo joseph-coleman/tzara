@@ -23,10 +23,10 @@ from config import (
     DEFAULT_VAULT,
     EXCLUDED_FOLDERS,
     INDEX_DOCUMENT_FRONTMATTER_DEFAULT,
-    OLLAMA_EMBED_MODEL,
-    OLLAMA_KEEP_ALIVE,
-    OLLAMA_MODEL,
-    OLLAMA_URL,
+    LLM_EMBED_MODEL,
+    LLM_KEEP_ALIVE,
+    LLM_MODEL,
+    LLM_URL,
     truncate_for_embedding,
     vault_root,
 )
@@ -807,9 +807,9 @@ async def generate_frontmatter(file_path: str, vault_id: str = DEFAULT_VAULT) ->
         result = await _generate_metadata_impl(
             abs_file,
             file_path,  # normalized_url_path = rel_path for debounce key match
-            OLLAMA_URL,
-            OLLAMA_MODEL,
-            OLLAMA_KEEP_ALIVE,
+            LLM_URL,
+            LLM_MODEL,
+            LLM_KEEP_ALIVE,
             vault_id,
         )
         logger.info("generate_frontmatter: metadata result for %s: %s", doc_id, result.get("status"))

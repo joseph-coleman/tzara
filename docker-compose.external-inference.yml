@@ -2,7 +2,7 @@
 # (on the host or LAN) instead of the bundled Docker Ollama container.
 #
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.external-inference.yml
-#   OLLAMA_URL=http://host.docker.internal:11434   # host.docker.internal = the host, on Docker Desktop
+#   LLM_URL=http://host.docker.internal:11434   # host.docker.internal = the host, on Docker Desktop
 #
 # Both bundled-Ollama services are assigned to the `bundled-ollama` profile. A
 # service with a profile is EXCLUDED from the default `up` unless that profile is

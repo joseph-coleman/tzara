@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import httpx
 import ollama
 
-logger = logging.getLogger("ollama_manager")
+logger = logging.getLogger("llm_manager")
 
 EMBEDDING_FAMILIES = {"bert", "nomic-bert"}
 
@@ -58,10 +58,17 @@ def _is_embedding_model(model_name: str, families: list[str]) -> bool:
     return False
 
 
-class OllamaManager:
+class NativeLLMManager:
     """
-    Manages Ollama model lifecycle: warming, unloading, activity tracking,
-    and generation. Follows the pattern of jupyter_client.py's AsyncJupyterManager.
+    The Ollama-native `/api/*` surface: model lifecycle (warming, unloading,
+    activity tracking), capability discovery, embeddings, and generation.
+
+    Named for the PROTOCOL, not the product - Lemonade and anything else serving an
+    `/api/*` mount is managed through here too. Every backend in llm_backend.py
+    subclasses this; the seam backends override only the inference methods to go
+    through /v1, and OpenAIBackend degrades the management half to no-ops.
+
+    Follows the pattern of jupyter_client.py's AsyncJupyterManager.
     """
 
     def __init__(self, url: str, model: str, keep_alive: str = "30m",
@@ -101,9 +108,9 @@ class OllamaManager:
                     model=self.model, prompt="", keep_alive=self.keep_alive,
                     options=self._warm_options(),
                 )
-                print(f"OllamaManager: model '{self.model}' warmed")
+                print(f"NativeLLMManager: model '{self.model}' warmed")
             except Exception as e:
-                print(f"OllamaManager: failed to warm model: {e}")
+                print(f"NativeLLMManager: failed to warm model: {e}")
         self._invalidate_ctx()
 
     async def unload_model(self):
@@ -111,9 +118,9 @@ class OllamaManager:
         async with self._lock:
             try:
                 await self.client.generate(model=self.model, prompt="", keep_alive="0")
-                print(f"OllamaManager: model '{self.model}' unloaded")
+                print(f"NativeLLMManager: model '{self.model}' unloaded")
             except Exception as e:
-                print(f"OllamaManager: failed to unload model: {e}")
+                print(f"NativeLLMManager: failed to unload model: {e}")
         self._invalidate_ctx()
 
     async def is_model_loaded(self) -> bool:
@@ -125,7 +132,7 @@ class OllamaManager:
                     return True
             return False
         except Exception as e:
-            print(f"OllamaManager: failed to check model status: {e}")
+            print(f"NativeLLMManager: failed to check model status: {e}")
             return False
 
     async def generate(self, prompt: str, max_tokens: int | None = None) -> str:
@@ -212,7 +219,7 @@ class OllamaManager:
                     return True
             return False
         except Exception as e:
-            print(f"OllamaManager: failed to check model status for {model_name}: {e}")
+            print(f"NativeLLMManager: failed to check model status for {model_name}: {e}")
             return False
 
     async def warm_any_model(self, model_name: str):
@@ -222,18 +229,18 @@ class OllamaManager:
                 await self.client.generate(
                     model=model_name, prompt="", keep_alive=self.keep_alive
                 )
-                print(f"OllamaManager: model '{model_name}' warmed")
+                print(f"NativeLLMManager: model '{model_name}' warmed")
             except Exception as e:
-                print(f"OllamaManager: failed to warm model {model_name}: {e}")
+                print(f"NativeLLMManager: failed to warm model {model_name}: {e}")
 
     async def unload_any_model(self, model_name: str):
         """Unload a specific model from memory."""
         async with self._lock:
             try:
                 await self.client.generate(model=model_name, prompt="", keep_alive="0")
-                print(f"OllamaManager: model '{model_name}' unloaded")
+                print(f"NativeLLMManager: model '{model_name}' unloaded")
             except Exception as e:
-                print(f"OllamaManager: failed to unload model {model_name}: {e}")
+                print(f"NativeLLMManager: failed to unload model {model_name}: {e}")
         if model_name == self.model:
             self._invalidate_ctx()
 
@@ -276,7 +283,7 @@ class OllamaManager:
                 if isinstance(ctx, int) and ctx > 0:
                     ceiling = ctx
         except Exception as e:
-            print(f"OllamaManager: failed to load capabilities for {self.model}: {e}")
+            print(f"NativeLLMManager: failed to load capabilities for {self.model}: {e}")
             self._capabilities = set()
         if ceiling is None:
             ceiling = await self._discover_ctx_ceiling()
@@ -438,7 +445,7 @@ class OllamaManager:
         self._capabilities = None  # reset cached capabilities
         self._context_length = None  # reset cached context length
         await self.warm_any_model(new_model)
-        print(f"OllamaManager: switched model from '{old_model}' to '{new_model}'")
+        print(f"NativeLLMManager: switched model from '{old_model}' to '{new_model}'")
 
     async def list_available_models(self) -> list:
         """List models available on the Ollama server."""
@@ -461,7 +468,7 @@ class OllamaManager:
                 })
             return models
         except Exception as e:
-            print(f"OllamaManager: failed to list models: {e}")
+            print(f"NativeLLMManager: failed to list models: {e}")
             return []
 
     async def get_model_capabilities(self, model_name: str) -> list[str]:
@@ -470,7 +477,7 @@ class OllamaManager:
             info = await self.client.show(model_name)
             return list(getattr(info, "capabilities", None) or [])
         except Exception as e:
-            print(f"OllamaManager: failed to get capabilities for {model_name}: {e}")
+            print(f"NativeLLMManager: failed to get capabilities for {model_name}: {e}")
             return []
 
     async def list_available_models_detailed(self) -> list:

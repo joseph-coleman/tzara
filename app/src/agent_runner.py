@@ -149,7 +149,7 @@ async def run_agent_loop(
     system_prompt: str,
     tool_defs: list,
     tool_names: set,
-    ollama_mgr,
+    llm_mgr,
     execute_tool,                      # async (name, args, status_callback) -> str
     status_label=lambda name: f"Executing {name}...",
     activity_narration=lambda name, args: name,
@@ -242,7 +242,7 @@ async def run_agent_loop(
             # break (we break on chunk.done) rather than leaving it for GC, which can
             # race into "aclose(): asynchronous generator is already running" at loop
             # teardown and leak suspended streams across runs in the worker.
-            stream = ollama_mgr.chat_stream_with_tools(
+            stream = llm_mgr.chat_stream_with_tools(
                 messages, tool_defs, system=system_prompt, think=think
             )
             try:

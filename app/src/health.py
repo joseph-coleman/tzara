@@ -113,8 +113,8 @@ async def _check_worker(timeout: float) -> dict:
     return out
 
 
-async def _check_llm(timeout: float, ollama_mgr=None) -> dict:
-    from config import LLM_PROVIDER, OLLAMA_EMBED_MODEL, OLLAMA_MODEL, OLLAMA_URL
+async def _check_llm(timeout: float, llm_mgr=None) -> dict:
+    from config import LLM_PROVIDER, LLM_EMBED_MODEL, LLM_MODEL, LLM_URL
 
     def _present(configured: str, models: list) -> bool:
         base = (configured or "").split(":")[0]
@@ -122,10 +122,10 @@ async def _check_llm(timeout: float, ollama_mgr=None) -> dict:
                    or m.get("name", "").split(":")[0] == base for m in models)
 
     async def listing():
-        mgr = ollama_mgr
+        mgr = llm_mgr
         if mgr is None:
             from src.llm_backend import create_llm_backend
-            mgr = create_llm_backend(model=OLLAMA_MODEL)
+            mgr = create_llm_backend(model=LLM_MODEL)
             try:
                 return await mgr.list_available_models()
             finally:
@@ -134,22 +134,22 @@ async def _check_llm(timeout: float, ollama_mgr=None) -> dict:
 
     ok, models = await _bounded(listing(), timeout, "llm")
     if not ok:
-        return {"reachable": False, "provider": LLM_PROVIDER, "url": OLLAMA_URL,
+        return {"reachable": False, "provider": LLM_PROVIDER, "url": LLM_URL,
                 "error": models}
     return {
         # An empty catalog is ambiguous - a just-started server has one - so
         # report unknown rather than a false negative.
         "reachable": True if models else None,
         "provider": LLM_PROVIDER,
-        "url": OLLAMA_URL,
-        "chat_model": {"name": OLLAMA_MODEL, "present": _present(OLLAMA_MODEL, models)},
-        "embed_model": {"name": OLLAMA_EMBED_MODEL,
-                        "present": _present(OLLAMA_EMBED_MODEL, models)},
+        "url": LLM_URL,
+        "chat_model": {"name": LLM_MODEL, "present": _present(LLM_MODEL, models)},
+        "embed_model": {"name": LLM_EMBED_MODEL,
+                        "present": _present(LLM_EMBED_MODEL, models)},
         "models_available": len(models),
     }
 
 
-async def collect_health(ollama_mgr=None,
+async def collect_health(llm_mgr=None,
                          timeout: float = DEFAULT_TIMEOUT_S) -> dict:
     """Every dependency check, run concurrently and individually bounded.
 
@@ -162,7 +162,7 @@ async def collect_health(ollama_mgr=None,
         _check_postgres(timeout),
         _check_redis(timeout),
         _check_worker(timeout),
-        _check_llm(timeout, ollama_mgr),
+        _check_llm(timeout, llm_mgr),
         return_exceptions=False,
     )
-    return {"postgres": pg, "redis": redis, "worker": worker, "ollama": llm}
+    return {"postgres": pg, "redis": redis, "worker": worker, "llm": llm}

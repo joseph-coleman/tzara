@@ -88,29 +88,35 @@ REDIS_PORT = 6379
 
 
 #
-# Ollama settings
+# LLM server settings
 #
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-# OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:1.7b")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
-OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
-# OLLAMA_NUM_CTX = the context window to ASK the backend to load the chat/agent model
+# These were named OLLAMA_* before Tzara spoke to anything but Ollama. The old
+# names are still honored so an existing .env keeps working; see _llm_env.
+def _llm_env(new: str, old: str, default: str) -> str:
+    """Read a renamed LLM setting, falling back to its pre-rename OLLAMA_* name."""
+    return os.environ.get(new) or os.environ.get(old) or default
+
+
+LLM_URL = _llm_env("LLM_URL", "OLLAMA_URL", "http://ollama:11434")
+LLM_MODEL = _llm_env("LLM_MODEL", "OLLAMA_MODEL", "llama3.2:3b")
+LLM_KEEP_ALIVE = _llm_env("LLM_KEEP_ALIVE", "OLLAMA_KEEP_ALIVE", "30m")
+# LLM_NUM_CTX = the context window to ASK the backend to load the chat/agent model
 # with, in tokens. 0 = don't request a size (let the backend choose / use its default).
 # This is an ASK, not a guarantee: the backend may load smaller under memory pressure.
 #   - Ollama: sent as the `num_ctx` option when warming (Ollama (re)loads at this size).
 #   - Lemonade: sent as `ctx_size` to POST /v1/load (its per-model llama-server honors it,
 #     memory permitting).
 # It maps to the provider's real load knob so its meaning is identical across providers.
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "0"))
+LLM_NUM_CTX = int(_llm_env("LLM_NUM_CTX", "OLLAMA_NUM_CTX", "0"))
 
-# OLLAMA_CONTEXT_BUDGET = the token window Tzara budgets history against internally
+# LLM_CONTEXT_BUDGET = the token window Tzara budgets history against internally
 # (compute_max_messages / compute_history_budget_tokens). Decoupled from the load ASK
 # above because "what we asked to load" and "what actually loaded" can differ. 0 = auto,
 # resolved by precedence: explicit budget > backend-measured actual (e.g. Lemonade
-# /v1/health ctx_size) > the OLLAMA_NUM_CTX ask > model ceiling > 4096 floor. Set it only
+# /v1/health ctx_size) > the LLM_NUM_CTX ask > model ceiling > 4096 floor. Set it only
 # to force a specific budget (e.g. cap below the loaded window for latency, or when the
 # backend can't report and the ask is unset).
-OLLAMA_CONTEXT_BUDGET = int(os.environ.get("OLLAMA_CONTEXT_BUDGET", "0"))
+LLM_CONTEXT_BUDGET = int(_llm_env("LLM_CONTEXT_BUDGET", "OLLAMA_CONTEXT_BUDGET", "0"))
 
 #
 # LLM backend provider seam (see app/src/llm_backend.py)
@@ -129,7 +135,7 @@ OLLAMA_CONTEXT_BUDGET = int(os.environ.get("OLLAMA_CONTEXT_BUDGET", "0"))
 #     Capabilities (tools/thinking/context_length) are thus DISCOVERED via
 #     /api/show, never declared as config flags.
 #
-# Model NAMES stay in the OLLAMA_* vars above and are configured per-server
+# Model NAMES stay in the LLM_* vars above and are configured per-server
 # (Ollama names on an Ollama server, Lemonade names on Lemonade -- never mixed).
 # `:latest` is an Ollama tag convention; the /v1 path strips a trailing `:latest`
 # defensively (see llm_backend._v1_model_name) for the rare pure-openai embed case.
@@ -149,10 +155,10 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama").strip().lower()
 LLM_HAS_NATIVE_MOUNT = LLM_PROVIDER in ("ollama", "lemonade", "ollama-native")
 
 # OpenAI-compatible /v1 base URL for the inference path. Auto-derives from
-# OLLAMA_URL by provider convention when unset: Ollama mounts OpenAI at bare `/v1`,
+# LLM_URL by provider convention when unset: Ollama mounts OpenAI at bare `/v1`,
 # Lemonade at `/api/v1`. Override for a server on a different path (e.g.
 # http://host:8000/v1). Unused by the `ollama-native` fallback.
-_llm_default_v1 = f"{OLLAMA_URL.rstrip('/')}/api/v1" if LLM_PROVIDER == "lemonade" else f"{OLLAMA_URL.rstrip('/')}/v1"
+_llm_default_v1 = f"{LLM_URL.rstrip('/')}/api/v1" if LLM_PROVIDER == "lemonade" else f"{LLM_URL.rstrip('/')}/v1"
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").strip() or _llm_default_v1
 
 # Send `cache_prompt: false` on WORKER (background agent) inference calls only.
@@ -184,39 +190,39 @@ AGENT_TOOL_THINK = os.environ.get("AGENT_TOOL_THINK", "true").strip().lower() in
 # name on `tzara-net`; override via env if the service name changes.
 SERVER_INTERNAL_URL = os.environ.get("SERVER_INTERNAL_URL", "http://tzaraserver:8000")
 
-# /edit/ writing-assist runs on the chat model (OLLAMA_MODEL). A dedicated edit model
-# was removed 2026-07-19: it defaulted to OLLAMA_MODEL anyway and, unlike the chat model,
+# /edit/ writing-assist runs on the chat model (LLM_MODEL). A dedicated edit model
+# was removed 2026-07-19: it defaulted to LLM_MODEL anyway and, unlike the chat model,
 # a distinct edit model was never warmed / ask-loaded / window-measured / clamped, so it
 # advertised a separately-managed model that wasn't one. Per-command model pinning still
-# exists via WritingCommand.model (falls back to OLLAMA_MODEL) for the rare command that
+# exists via WritingCommand.model (falls back to LLM_MODEL) for the rare command that
 # wants a specific model; reintroduce a global edit model only alongside that machinery.
 # Optional edit-specific history budget (tokens) for /edit/ cursor-mode commands: it
 # sizes the document-context tier (full-doc / outline+window / window-only) in
 # edit_assist._build_doc_context. 0 (default) = inherit the chat model's resolved window
-# (ollama_mgr.get_context_length(), already ask/measured/clamped), so the edit path picks
+# (llm_mgr.get_context_length(), already ask/measured/clamped), so the edit path picks
 # up all the context handling for free. Set >0 only to cap edit context SMALLER than the
 # window (a latency tweak); it's clamped to the model's real window so it can't over-pack.
-OLLAMA_EDIT_CONTEXT_BUDGET = int(os.environ.get("OLLAMA_EDIT_CONTEXT_BUDGET", "0"))
+LLM_EDIT_CONTEXT_BUDGET = int(_llm_env("LLM_EDIT_CONTEXT_BUDGET", "OLLAMA_EDIT_CONTEXT_BUDGET", "0"))
 
 #
 # vector search settings
 #
-OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "embeddinggemma:300m")
-OLLAMA_EMBED_KEEP_ALIVE = os.environ.get("OLLAMA_EMBED_KEEP_ALIVE", "10m")
+LLM_EMBED_MODEL = _llm_env("LLM_EMBED_MODEL", "OLLAMA_EMBED_MODEL", "embeddinggemma:300m")
+LLM_EMBED_KEEP_ALIVE = _llm_env("LLM_EMBED_KEEP_ALIVE", "OLLAMA_EMBED_KEEP_ALIVE", "10m")
 # Hard ceiling on the token length of a single embedding input. A llama.cpp-backed
 # server (e.g. Lemonade) rejects any embedding input longer than its physical batch
 # size (--ubatch-size) with "input is too large to process" and, unlike Ollama, does
 # NOT silently truncate. We clip inputs to this budget before sending (see
 # truncate_for_embedding). Set it to your embed model's context window / the server's
 # ubatch; 2048 = embeddinggemma's context.
-OLLAMA_EMBED_MAX_TOKENS = int(os.environ.get("OLLAMA_EMBED_MAX_TOKENS", "2048"))
+LLM_EMBED_MAX_TOKENS = int(_llm_env("LLM_EMBED_MAX_TOKENS", "OLLAMA_EMBED_MAX_TOKENS", "2048"))
 
-# Max concurrent background LLM/embed requests against Ollama (frontmatter
+# Max concurrent background LLM/embed requests against the LLM server (frontmatter
 # generation, embedding, model warming). Background tasks all run in the single
 # taskiq worker process, so an in-process semaphore of this size caps how hard a
-# bulk reindex hammers the shared Ollama server. 1 = fully serialized. Interactive
+# bulk reindex hammers the shared server. 1 = fully serialized. Interactive
 # chat/edit (web process) are intentionally NOT gated by this.
-OLLAMA_MAX_CONCURRENCY = int(os.environ.get("OLLAMA_MAX_CONCURRENCY", "1"))
+LLM_MAX_CONCURRENCY = int(_llm_env("LLM_MAX_CONCURRENCY", "OLLAMA_MAX_CONCURRENCY", "1"))
 
 
 #
@@ -301,7 +307,7 @@ _embed_logger = logging.getLogger("embedding")
 
 
 def truncate_for_embedding(text: str) -> str:
-    """Clip an embedding input to OLLAMA_EMBED_MAX_TOKENS (character-approximated).
+    """Clip an embedding input to LLM_EMBED_MAX_TOKENS (character-approximated).
 
     Restores the forgiveness Ollama gave us for free: a strict llama.cpp backend
     hard-fails an over-long embedding input instead of truncating it, so an oversized
@@ -319,14 +325,14 @@ def truncate_for_embedding(text: str) -> str:
     being silently dropped from the embedding -- a retrieval-quality signal worth
     surfacing rather than hiding.
     """
-    max_chars = int(OLLAMA_EMBED_MAX_TOKENS * CHARS_PER_TOKEN * 0.8)
+    max_chars = int(LLM_EMBED_MAX_TOKENS * CHARS_PER_TOKEN * 0.8)
     if len(text) <= max_chars:
         return text
     _embed_logger.warning(
         "truncate_for_embedding: clipping oversized embedding input %d -> %d chars "
-        "(OLLAMA_EMBED_MAX_TOKENS=%d); a chunk exceeded the model context and its tail "
+        "(LLM_EMBED_MAX_TOKENS=%d); a chunk exceeded the model context and its tail "
         "will not be embedded -- check the chunker for an unbounded chunk_type",
-        len(text), max_chars, OLLAMA_EMBED_MAX_TOKENS,
+        len(text), max_chars, LLM_EMBED_MAX_TOKENS,
     )
     return text[:max_chars]
 

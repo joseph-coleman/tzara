@@ -25,6 +25,9 @@ from config import (
     CHARS_PER_TOKEN,
     DEFAULT_VAULT,
     INDEX_DOCUMENT_FRONTMATTER_DEFAULT,
+    LLM_KEEP_ALIVE,
+    LLM_MODEL,
+    LLM_URL,
     USE_GIT_VERSIONING,
     vault_root,
 )
@@ -114,7 +117,7 @@ AGENT_RUN_LOCK_TTL_S = 7200      # 2h - generously above any sane run
 
 @broker.task(task_name="warm_model_task", retry_on_error=True, max_retries=3)
 async def warm_model_task(
-    ollama_url: str,
+    llm_url: str,
     model_name: str,
     keep_alive: str = "30m",
     # 30s could not load a 120B model: the client timed out and the task reported
@@ -130,7 +133,7 @@ async def warm_model_task(
     with different keep_alive durations.  The timeout parameter controls
     how long to wait for the connection (useful when the server may be asleep).
 
-    `num_ctx` is the load ASK (OLLAMA_NUM_CTX). When >0 the window is requested at
+    `num_ctx` is the load ASK (LLM_NUM_CTX). When >0 the window is requested at
     load via the provider's real knob: Ollama honors `num_ctx` on the native warm,
     but Lemonade only honors it via /v1/load -- so for Lemonade we route the ask
     through the configured backend (LemonadeBackend.warm_model) rather than the raw
@@ -142,7 +145,7 @@ async def warm_model_task(
     from src.llm_gate import get_llm_gate
 
     # Warming is a native-mount MANAGEMENT op (load into VRAM via keep_alive)
-    # against the passed ollama_url. Whether warming makes sense for the active
+    # against the passed llm_url. Whether warming makes sense for the active
     # provider is decided by the ENQUEUER (main._fire_warm_task) - a pure OpenAI
     # /v1 server has no such concept and loads on demand, so it never enqueues.
 
@@ -158,14 +161,14 @@ async def warm_model_task(
     # server just loads it on demand; a missed warm costs latency, not results.
     if num_ctx <= 0:
         try:
-            probe = create_llm_backend(url=ollama_url, model=model_name,
+            probe = create_llm_backend(url=llm_url, model=model_name,
                                        keep_alive=keep_alive)
             try:
                 if await probe.is_any_model_loaded(model_name):
                     print(f"warm_model_task: '{model_name}' already loaded on "
-                          f"{ollama_url}; skipping")
+                          f"{llm_url}; skipping")
                     return {"status": "skipped", "reason": "already loaded",
-                            "model": model_name, "url": ollama_url}
+                            "model": model_name, "url": llm_url}
             finally:
                 await probe.aclose()
         except Exception as e:
@@ -178,7 +181,7 @@ async def warm_model_task(
                 # Lemonade ignores /api/generate's num_ctx; apply the ask via /v1/load.
                 from src.llm_backend import create_llm_backend
                 backend = create_llm_backend(
-                    url=ollama_url, model=model_name, keep_alive=keep_alive,
+                    url=llm_url, model=model_name, keep_alive=keep_alive,
                     num_ctx_request=num_ctx,
                 )
                 try:
@@ -186,7 +189,7 @@ async def warm_model_task(
                 finally:
                     await backend.aclose()
             else:
-                client = _ollama.AsyncClient(host=ollama_url, timeout=timeout)
+                client = _ollama.AsyncClient(host=llm_url, timeout=timeout)
                 options = {"num_ctx": num_ctx} if num_ctx > 0 else None
                 try:
                     await client.generate(model=model_name, prompt="",
@@ -194,11 +197,11 @@ async def warm_model_task(
                 except _ollama.ResponseError:
                     # Embedding models don't support generate; use embed instead
                     await client.embed(model=model_name, input=["warm"], keep_alive=keep_alive)
-        print(f"warm_model_task: model '{model_name}' warmed on {ollama_url} (keep_alive={keep_alive}, num_ctx={num_ctx})")
-        return {"status": "ok", "model": model_name, "url": ollama_url}
+        print(f"warm_model_task: model '{model_name}' warmed on {llm_url} (keep_alive={keep_alive}, num_ctx={num_ctx})")
+        return {"status": "ok", "model": model_name, "url": llm_url}
     except Exception as e:
-        print(f"warm_model_task: failed to warm '{model_name}' on {ollama_url}: {e}")
-        return {"status": "failed", "error": str(e), "model": model_name, "url": ollama_url}
+        print(f"warm_model_task: failed to warm '{model_name}' on {llm_url}: {e}")
+        return {"status": "failed", "error": str(e), "model": model_name, "url": llm_url}
 
 
 
@@ -248,7 +251,7 @@ async def run_agent_task(agent_slug: str, vault_id: str | None = None,
     below carry that depth so chained triggers stay bounded (EVENT_MAX_DEPTH)."""
     from src import agent_registry
     from src.background_agents import (
-        AgentCancelled, make_worker_ollama, run_background_agent)
+        AgentCancelled, make_worker_llm, run_background_agent)
     from src.events import emit, format_trigger_note
     from src.llm_gate import record_runlock
 
@@ -278,7 +281,7 @@ async def run_agent_task(agent_slug: str, vault_id: str | None = None,
     job_id = agent_registry.agent_job_id(agent_slug, vault_id)
 
     r = get_async_redis()
-    ollama_mgr = make_worker_ollama()
+    llm_mgr = make_worker_llm()
 
     cancel_key = agent_registry.agent_cancel_key(job_id)
 
@@ -332,7 +335,7 @@ async def run_agent_task(agent_slug: str, vault_id: str | None = None,
                 ex=RESULT_TTL,
             )
             try:
-                res = await run_background_agent(agent, vid, ollama_mgr,
+                res = await run_background_agent(agent, vid, llm_mgr,
                                                  cancel_check=_cancelled,
                                                  kickoff_extra=trigger_note,
                                                  trigger_events=trigger_events,
@@ -388,7 +391,7 @@ async def run_agent_task(agent_slug: str, vault_id: str | None = None,
         await r.close()
         # Each run builds its own worker backend; close its /v1 httpx client so it
         # isn't leaked across the worker's lifetime.
-        await ollama_mgr.aclose()
+        await llm_mgr.aclose()
 
 
 @broker.task(
@@ -431,14 +434,14 @@ async def test_postgresql():
 async def generate_tags_task(
     file_path: str,
     normalized_url_path: str,
-    ollama_url: str,
-    ollama_model: str,
+    llm_url: str,
+    llm_model: str,
     keep_alive: str,
 ) -> dict:
     """Auto-generate tags for a wiki document via Ollama.
     Kept for backward compatibility - delegates to generate_metadata_task."""
     return await _generate_metadata_impl(
-        file_path, normalized_url_path, ollama_url, ollama_model, keep_alive
+        file_path, normalized_url_path, llm_url, llm_model, keep_alive
     )
 
 
@@ -450,14 +453,14 @@ async def generate_tags_task(
 async def generate_metadata_task(
     file_path: str,
     normalized_url_path: str,
-    ollama_url: str,
-    ollama_model: str,
+    llm_url: str,
+    llm_model: str,
     keep_alive: str,
     vault_id: str = DEFAULT_VAULT,
 ) -> dict:
     """Auto-generate tags and summary for a wiki document via Ollama."""
     return await _generate_metadata_impl(
-        file_path, normalized_url_path, ollama_url, ollama_model, keep_alive, vault_id
+        file_path, normalized_url_path, llm_url, llm_model, keep_alive, vault_id
     )
 
 
@@ -473,14 +476,14 @@ def _compute_body_char_limit(context_length: int, num_predict: int = 256) -> int
 async def _generate_metadata_impl(
     file_path: str,
     normalized_url_path: str,
-    ollama_url: str,
-    ollama_model: str,
+    llm_url: str,
+    llm_model: str,
     keep_alive: str,
     vault_id: str = DEFAULT_VAULT,
 ) -> dict:
     """Shared implementation for tag/summary generation."""
     import ollama as _ollama
-    from src.frontmatter import parse_ollama_tags
+    from src.frontmatter import parse_llm_tags
     from src.llm_gate import get_llm_gate
 
     try:
@@ -511,7 +514,7 @@ async def _generate_metadata_impl(
     NUM_PREDICT = 256  # assumed size of typical response
     new_tags = []
     summary = ""
-    be = create_llm_backend(url=ollama_url, model=ollama_model, keep_alive=keep_alive)
+    be = create_llm_backend(url=llm_url, model=llm_model, keep_alive=keep_alive)
     try:
         context_length = await be.get_context_length()
         body_char_limit = _compute_body_char_limit(context_length, NUM_PREDICT)
@@ -528,7 +531,7 @@ async def _generate_metadata_impl(
             try:
                 async with get_llm_gate("metadata:tags"):
                     raw_tags = await be.generate(tags_prompt, max_tokens=NUM_PREDICT)
-                new_tags = parse_ollama_tags(raw_tags)
+                new_tags = parse_llm_tags(raw_tags)
             except Exception as e:
                 print(f"generate_metadata_task: tags generation failed: {e}")
 
@@ -741,9 +744,9 @@ async def generate_all_metadata_task(force: bool = False, vault_id: str | None =
                 await generate_metadata_task.kicker().with_task_id(task_id).kiq(
                     file_path=abs_file,
                     normalized_url_path=rel_path,
-                    ollama_url=os.environ.get("OLLAMA_URL", "http://ollamaserver:11434"),
-                    ollama_model=os.environ.get("OLLAMA_MODEL", "llama3.2"),
-                    keep_alive=os.environ.get("OLLAMA_KEEP_ALIVE", "10m"),
+                    llm_url=LLM_URL,
+                    llm_model=LLM_MODEL,
+                    keep_alive=LLM_KEEP_ALIVE,
                     vault_id=vid,
                 )
                 enqueued += 1

@@ -572,7 +572,7 @@ def render_messages_for_summary(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def summarize_conversation(messages: list[dict], instruction: str, ollama_mgr,
+async def summarize_conversation(messages: list[dict], instruction: str, llm_mgr,
                                  max_tokens: int | None = None) -> str:
     """Render `messages` and summarize them under a caller-supplied `instruction`.
 
@@ -583,7 +583,7 @@ async def summarize_conversation(messages: list[dict], instruction: str, ollama_
     cross-run handoff note). `instruction` should END where the transcript belongs;
     the rendered transcript is appended after it.
 
-    Uses the active model (via `ollama_mgr.generate`). Returns "" on failure so the
+    Uses the active model (via `llm_mgr.generate`). Returns "" on failure so the
     caller can fall back safely (chat: skip the checkpoint; memory: preserve prior
     memory rather than clobber it with an empty write).
 
@@ -597,7 +597,7 @@ async def summarize_conversation(messages: list[dict], instruction: str, ollama_
     logger.info("summarize_conversation: %d msgs, ~%d prompt tokens, cap=%s",
                 len(messages), estimate_tokens(messages), max_tokens or "none")
     try:
-        result = await ollama_mgr.generate(prompt, max_tokens=max_tokens)
+        result = await llm_mgr.generate(prompt, max_tokens=max_tokens)
         return (result or "").strip()
     except Exception as e:
         logger.warning("summarize_conversation failed: %s", e)

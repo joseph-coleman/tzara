@@ -592,7 +592,7 @@ def chunk(body, title="", max_chunk_size=2000):
     if "tags" in frontmatter:
         # Plain split of ALL frontmatter tags for indexing. NOT
         # WikiDoc.extract_manual_tags (that returns only !-prefixed manual tags)
-        # nor parse_ollama_tags (LLM-output parser) - different semantics.
+        # nor parse_llm_tags (LLM-output parser) - different semantics.
         fm_tags = [t.strip() for t in frontmatter["tags"].split(",") if t.strip()]
 
     if not title and "title" in frontmatter:

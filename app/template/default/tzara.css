@@ -2508,15 +2508,15 @@ pre.chat-code-proposal {
     }
 }
 
-/* ---- Ollama model pull ---- */
-.ollama-pull-row {
+/* ---- LLM model pull ---- */
+.model-pull-row {
     display: flex;
     gap: 0.5em;
     align-items: center;
     margin-bottom: 0.75em;
 }
 
-.ollama-pull-row input[type="text"] {
+.model-pull-row input[type="text"] {
     flex: 1;
     padding: 0.4em;
     font-size:  var(--text-md);
@@ -2526,7 +2526,7 @@ pre.chat-code-proposal {
     color: var(--fg-color);
 }
 
-.ollama-pull-status {
+.model-pull-status {
     margin-top: 0.5em;
     padding: 0.5em;
     background: var(--lighter);
@@ -2534,7 +2534,7 @@ pre.chat-code-proposal {
     font-size:  var(--text-smd);
 }
 
-.ollama-pull-progress-bar {
+.model-pull-progress-bar {
     height: 1.2em;
     background: var(--lightest);
     border-radius: 4px;
@@ -2542,7 +2542,7 @@ pre.chat-code-proposal {
     overflow: hidden;
 }
 
-.ollama-pull-progress-fill {
+.model-pull-progress-fill {
     height: 100%;
     background: var(--darker);
     border-radius: 4px;

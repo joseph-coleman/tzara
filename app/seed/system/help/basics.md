@@ -72,7 +72,7 @@ If there are any pages with jupyter code that's been run, an entry will appear h
 
 ## Models
 
-Depending on what LLM server you're using, this page offers a little bit of management.  With Ollama, we can easily inspect downloaded models, actually download more of them, and switch between them.  
+Depending on what LLM server you're using, this page offers a little bit of management.  With a server that has an Ollama-style management API - Ollama itself, or Lemonade - we can easily inspect downloaded models, actually download more of them, and switch between them.  A plain OpenAI-compatible server has no notion of managing models, so those controls quietly do nothing there.  
 
 The models for chat and for embedding are two different types of models.  These are configured in your `.env` file, and you shoud pay special attention to those settings.  
 

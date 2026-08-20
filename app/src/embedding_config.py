@@ -13,8 +13,8 @@ model in a DB singleton row, and migrates vector columns when the model changes.
 import logging
 
 from config import (
-    OLLAMA_EMBED_MODEL,
-    OLLAMA_URL,
+    LLM_EMBED_MODEL,
+    LLM_URL,
 )
 
 logger = logging.getLogger("embedding_config")
@@ -42,7 +42,7 @@ def detect_embedding_dimension() -> tuple[str, int]:
     from src.llm_backend import embed_texts_sync
 
     dim = len(embed_texts_sync(["dimension probe"])[0])
-    return (OLLAMA_EMBED_MODEL, dim)
+    return (LLM_EMBED_MODEL, dim)
 
 
 # ---------------------------------------------------------------------------

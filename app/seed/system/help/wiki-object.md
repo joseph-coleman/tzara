@@ -1,7 +1,7 @@
 ---
 title: The wiki object
-Summary: The `wiki` object is automatically injected into every Tzara Python kernel, providing two variants: a read‑only page `wiki` for markdown cells and a full‑access agent `wiki` for custom tools. Both expose the same query and search methods, while the agent version adds text read/write, section editing, link management, and argument‑coercion helpers, all gated through a per‑run HMAC token and a write‑gate system. Each kernel is isolated to a single vault, enforcing server‑side security.
-Tags: wiki, jupyter, agent, api, vault, hmac
+Summary: The `wiki` object is automatically injected into every Python kernel, with two variants: a read‑only page‑kernel client (`_WikiClient`) for inline Jupyter cells, and a richer agent‑kernel client (`_AgentWiki`) that can read page text, stage or apply writes, and edit specific sections, all confined to a single vault via server‑side isolation and HMAC tokens. Both expose the same read‑only query methods (e.g., `search`, `queryDocuments`), while the agent version adds text access, granular editing helpers, and argument‑coercion utilities for custom tools.
+Tags: python, jupyter, wiki-api, agent, vault, hmac, markdown
 ---
 
 # The `wiki` object
@@ -21,7 +21,7 @@ Both are injected automatically when the kernel starts - you never construct one
 |---|---|---|
 | Runs in | `jupyterserver` kernel (page cells) | `jupyterserver-agent` kernel (agent tools) |
 | Reaches | Tzara server, `/api/kernel/{vault}/query` | worker agent-API (`/query`, `/read`, `/write`) |
-| Network | `tzara-net` (full vault file access) | `agent-net` only (no vault mount, no DB/Ollama route) |
+| Network | `tzara-net` (full vault file access) | `agent-net` only (no vault mount, no DB/LLM route) |
 | Authorization | none needed (trusted network) | per-run HMAC token - **confines** the caller to one vault + one kernel, it is not a login |
 | Query the index | yes | yes |
 | Read page **text** | no | yes - `read()` (sees your run's own staged edits) |

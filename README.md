@@ -37,7 +37,7 @@ When it's up:
 - Wiki:            http://localhost:8000/
 - Readiness check: http://localhost:8000/health
 
-`/health` returns a single JSON status for Postgres, Redis, Ollama, and whether your chat + embedding models are present.  Check it out first if anything looks broken.
+`/health` returns a single JSON status for Postgres, Redis, the LLM server, and whether your chat + embedding models are present.  Check it out first if anything looks broken.
 
 Prefer to do it by hand? `setup` is just a convenience wrapper - the equivalent manual steps are, basically:
 
@@ -61,13 +61,13 @@ The defaults are chosen to "just work" with zero edits. For the settings most wo
 | `DEFAULT_VAULT` | Which vault the landing page opens. | `main` |
 | `PORT` | Web server port. | `8000` |
 | `POSTGRES_PASSWORD` | Postgres auth. `setup` writes a random one for you; set your own if configuring by hand. Baked in on first start - can't change afterward. | *(generated)* |
-| `OLLAMA_MODEL` / `OLLAMA_EMBED_MODEL` | Chat / embedding model names. | `llama3.2:3b` / `embeddinggemma:300m` |
+| `LLM_MODEL` / `LLM_EMBED_MODEL` | Chat / embedding model names. | `llama3.2:3b` / `embeddinggemma:300m` |
 
 Storage for Postgres and Ollama models defaults to Docker-managed **named volumes** (`pg_data`, `ollama_models`) so there are no host paths to create. To store that data at a specific host path instead, set `POSTGRES_DATA_LOCATION` / `OLLAMA_MODELS` to an absolute path in `.env`.  This is recommended, but not needed if you're just trying this out. 
 
 The `ADVANCED` block in `.env.template` documents everything else (LLM backend provider, etc.).
 
-## GPU acceleration / external Ollama
+## GPU acceleration / external LLM server
 
 The base `docker-compose.yml` runs Ollama on CPU. To change that, layer an
 overlay by editing `COMPOSE_FILE` in `.env`:
@@ -78,14 +78,14 @@ COMPOSE_FILE=docker-compose.yml;docker-compose.nvidia.yml
 # AMD ROCm GPU
 COMPOSE_FILE=docker-compose.yml;docker-compose.amd.yml
 # Use an inference server you run elsewhere - stock Ollama, Lemonade, vLLM,
-# LocalAI, etc. (set OLLAMA_URL + LLM_PROVIDER to point at it)
+# LocalAI, etc. (set LLM_URL + LLM_PROVIDER to point at it)
 COMPOSE_FILE=docker-compose.yml;docker-compose.external-inference.yml
 ```
 
 (`COMPOSE_PATH_SEPARATOR` is `;` on Windows/Docker Desktop, `:` on macOS/Linux.)
-With the external-inference overlay, no local Ollama container is started and the first-run model bootstrap is skipped - the models live on your external server. The overlay is topology-only (it just removes the local container); *which* server you talk to and *how* is set by `OLLAMA_URL` + `LLM_PROVIDER` in `.env`.
+With the external-inference overlay, no local Ollama container is started and the first-run model bootstrap is skipped - the models live on your external server. The overlay is topology-only (it just removes the local container); *which* server you talk to and *how* is set by `LLM_URL` + `LLM_PROVIDER` in `.env`.
 
-To catch the easy mistake, `setup` refuses to build if `OLLAMA_URL` points at an external server but this overlay *isn't* in `COMPOSE_FILE` - otherwise it would spin up a local Ollama container and download models you don't need. It tells you exactly what to add to `.env`, then re-run.
+To catch the easy mistake, `setup` refuses to build if `LLM_URL` points at an external server but this overlay *isn't* in `COMPOSE_FILE` - otherwise it would spin up a local Ollama container and download models you don't need. It tells you exactly what to add to `.env`, then re-run.
 
 ## The services
 

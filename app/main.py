@@ -53,13 +53,13 @@ from config import (
     INDEX_DOCUMENT_FRONTMATTER_DEFAULT,
     LLM_HAS_NATIVE_MOUNT,
     LLM_PROVIDER,
-    OLLAMA_CONTEXT_BUDGET,
-    OLLAMA_KEEP_ALIVE,
-    OLLAMA_MODEL,
-    OLLAMA_NUM_CTX,
-    OLLAMA_URL,
-    OLLAMA_EMBED_MODEL,
-    OLLAMA_EMBED_KEEP_ALIVE,
+    LLM_CONTEXT_BUDGET,
+    LLM_KEEP_ALIVE,
+    LLM_MODEL,
+    LLM_NUM_CTX,
+    LLM_URL,
+    LLM_EMBED_MODEL,
+    LLM_EMBED_KEEP_ALIVE,
     
 
     AGENT_SCHEDULER_TICK_S,
@@ -89,7 +89,7 @@ from src import kernel_api
 #     StrikeThroughExtension,
 #     WikiLinkExtension,
 # )
-from src.ollama_manager import OllamaManager
+from src.llm_manager import NativeLLMManager
 from src.llm_backend import create_llm_backend
 
 from src.tasks import kernel_reaper_loop
@@ -545,8 +545,8 @@ async def view_document(request: Request):
         # Track activity and warm the LLM model in the background. mark_human_active
         # publishes to Redis so the WORKER can see it and have agents stand aside;
         # touch() only ever set a process-local timestamp nothing read.
-        if ollama_mgr:
-            ollama_mgr.touch()
+        if llm_mgr:
+            llm_mgr.touch()
             await mark_human_active()
             await _fire_warm_task()
 
@@ -1133,7 +1133,7 @@ async def kernel_query_endpoint(request: Request):
 
     The vault is taken from the URL (`/api/kernel/{vault}/query`) and passed to the
     dispatcher -- never trusted from the body -- so a kernel can only ever query its
-    own vault. The underlying rag_search calls are synchronous (psycopg2 + Ollama
+    own vault. The underlying rag_search calls are synchronous (psycopg2 + the LLM server
     embed), so they run in a threadpool to keep the event loop free.
     """
     vault = request.path_params["vault"]
@@ -1493,7 +1493,7 @@ async def index_document(request: Request):
 # from contextlib import asynccontextmanager
 
 
-ollama_mgr: OllamaManager | None = None
+llm_mgr: NativeLLMManager | None = None
 task_tracker: TaskTracker | None = None
 
 
@@ -1514,18 +1514,18 @@ async def _fire_warm_task(
     # enqueue a warm at all rather than schedule a task that would no-op.
     if not LLM_HAS_NATIVE_MOUNT:
         return
-    _model = model or OLLAMA_MODEL
+    _model = model or LLM_MODEL
     now = time.time()
     if now - _last_warm_fire.get(_model, 0.0) < _WARM_DEBOUNCE_SECONDS:
         return
     _last_warm_fire[_model] = now
 
-    _url = url or OLLAMA_URL
-    _keep_alive = keep_alive or OLLAMA_KEEP_ALIVE
+    _url = url or LLM_URL
+    _keep_alive = keep_alive or LLM_KEEP_ALIVE
     task_id = f"warm:{_model}"
-    # Apply the OLLAMA_NUM_CTX load ASK only to the chat/agent model; embedding models
+    # Apply the LLM_NUM_CTX load ASK only to the chat/agent model; embedding models
     # have their own tiny window and must not be loaded at the chat context size.
-    _num_ctx = OLLAMA_NUM_CTX if _model == OLLAMA_MODEL else 0
+    _num_ctx = LLM_NUM_CTX if _model == LLM_MODEL else 0
 
     # Only pass num_ctx when the ask is actually set: keeps the default (ask-off) path
     # compatible with an un-rebuilt worker whose warm_model_task predates the parameter.
@@ -1534,7 +1534,7 @@ async def _fire_warm_task(
         if task_tracker and await task_tracker.is_active(task_id):
             return
         await warm_model_task.kicker().with_task_id(task_id).kiq(
-            ollama_url=_url,
+            llm_url=_url,
             model_name=_model,
             keep_alive=_keep_alive,
             **kw,
@@ -1570,7 +1570,7 @@ async def _fire_agent_task(agent_slug: str, vault_id=None):
 @asynccontextmanager
 async def lifespan(app):
     # --- Startup ---
-    global task_tracker, ollama_mgr
+    global task_tracker, llm_mgr
 
     # init.sql only runs on a FRESH volume, so a database carried across an
     # upgrade keeps its original schema. Reconcile before anything reads it.
@@ -1580,9 +1580,9 @@ async def lifespan(app):
     reaper_task = asyncio.create_task(kernel_reaper_loop())
 
     print(f"Starting LLM backend (provider={LLM_PROVIDER})...")
-    ollama_mgr = create_llm_backend(
-        url=OLLAMA_URL, model=OLLAMA_MODEL, keep_alive=OLLAMA_KEEP_ALIVE,
-        num_ctx_request=OLLAMA_NUM_CTX, context_budget=OLLAMA_CONTEXT_BUDGET,
+    llm_mgr = create_llm_backend(
+        url=LLM_URL, model=LLM_MODEL, keep_alive=LLM_KEEP_ALIVE,
+        num_ctx_request=LLM_NUM_CTX, context_budget=LLM_CONTEXT_BUDGET,
     )
 
     print("Starting Taskiq broker...")
@@ -1602,9 +1602,9 @@ async def lifespan(app):
     except asyncio.CancelledError:
         pass
 
-    print("Unloading Ollama model...")
-    if ollama_mgr:
-        await ollama_mgr.unload_model()
+    print("Unloading LLM model...")
+    if llm_mgr:
+        await llm_mgr.unload_model()
 
     await jupyter_manager.prune_stale_kernels(-1)
 
@@ -1924,31 +1924,31 @@ async def manage_jupyter(request: Request):
     return HTMLResponse(response_content)
 
 
-async def manage_ollama(request: Request):
-    # /manage/ollama
+async def manage_models(request: Request):
+    # /manage/models
     qp = request.query_params
     action = qp.get("action")
 
     if action == "warm":
-        await _fire_warm_task(model=ollama_mgr.model)
-        return RedirectResponse("/manage/ollama")
+        await _fire_warm_task(model=llm_mgr.model)
+        return RedirectResponse("/manage/models")
     if action == "unload":
-        await ollama_mgr.unload_model()
-        return RedirectResponse("/manage/ollama")
+        await llm_mgr.unload_model()
+        return RedirectResponse("/manage/models")
     if action == "warm_embed":
-        await _fire_warm_task(model=OLLAMA_EMBED_MODEL, keep_alive=OLLAMA_EMBED_KEEP_ALIVE)
-        return RedirectResponse("/manage/ollama")
+        await _fire_warm_task(model=LLM_EMBED_MODEL, keep_alive=LLM_EMBED_KEEP_ALIVE)
+        return RedirectResponse("/manage/models")
     if action == "unload_embed":
-        await ollama_mgr.unload_any_model(OLLAMA_EMBED_MODEL)
-        return RedirectResponse("/manage/ollama")
+        await llm_mgr.unload_any_model(LLM_EMBED_MODEL)
+        return RedirectResponse("/manage/models")
     if action == "set_model":
         new_model = qp.get("model", "").strip()
         if new_model:
-            await ollama_mgr.set_model(new_model)
-        return RedirectResponse("/manage/ollama")
+            await llm_mgr.set_model(new_model)
+        return RedirectResponse("/manage/models")
 
-    status = await ollama_mgr.get_status()
-    available = await ollama_mgr.list_available_models_detailed()
+    status = await llm_mgr.get_status()
+    available = await llm_mgr.list_available_models_detailed()
 
     # --- Chat model section ---
     # `reachable` is only reported by backends that can distinguish "server down" from
@@ -1998,12 +1998,12 @@ async def manage_ollama(request: Request):
     if status.get("memory_gb") is not None:
         raw_markdown += f"| System memory (host) | {status['memory_gb']:.1f} GB |\n"
 
-    raw_markdown += "\n[Warm Model](/manage/ollama?action=warm) | [Unload Model](/manage/ollama?action=unload)\n"
+    raw_markdown += "\n[Warm Model](/manage/models?action=warm) | [Unload Model](/manage/models?action=unload)\n"
 
     # --- Embedding model section ---
-    embed_loaded = await ollama_mgr.is_any_model_loaded(OLLAMA_EMBED_MODEL)
+    embed_loaded = await llm_mgr.is_any_model_loaded(LLM_EMBED_MODEL)
     embed_info = (
-        await ollama_mgr.get_model_info(OLLAMA_EMBED_MODEL) if embed_loaded else None
+        await llm_mgr.get_model_info(LLM_EMBED_MODEL) if embed_loaded else None
     )
     embed_loaded_str = "Loaded" if embed_loaded else "Not loaded"
 
@@ -2012,7 +2012,7 @@ async def manage_ollama(request: Request):
 
 | Property | Value |
 |----------|-------|
-| Model | `{OLLAMA_EMBED_MODEL}` |
+| Model | `{LLM_EMBED_MODEL}` |
 | Status | **{embed_loaded_str}** |
 """
 
@@ -2026,7 +2026,7 @@ async def manage_ollama(request: Request):
         if embed_info.get("expires_at"):
             raw_markdown += f"| Expires | {embed_info['expires_at']} |\n"
 
-    raw_markdown += "\n[Warm Embedding Model](/manage/ollama?action=warm_embed) | [Unload Embedding Model](/manage/ollama?action=unload_embed)\n"
+    raw_markdown += "\n[Warm Embedding Model](/manage/models?action=warm_embed) | [Unload Embedding Model](/manage/models?action=unload_embed)\n"
 
     # --- Switch chat model section ---
     raw_markdown += "\n## Switch Chat Model\n\n"
@@ -2038,29 +2038,29 @@ async def manage_ollama(request: Request):
             is_embedding = m.get("is_embedding", False)
             caps = m.get("capabilities", [])
             badges = "".join(f" `[{c}]`" for c in caps) if caps else ""
-            if m_name == ollama_mgr.model:
+            if m_name == llm_mgr.model:
                 raw_markdown += f"- **`{m_name}`** (active) `({m_psize}, {m_qlevel})`{badges}\n"
             elif is_embedding:
                 raw_markdown += f"- `{m_name}` `({m_psize}, {m_qlevel})`{badges}\n"
             else:
-                raw_markdown += f"- [`{m_name}`](/manage/ollama?action=set_model&model={m_name}) `({m_psize}, {m_qlevel})`{badges}\n"
+                raw_markdown += f"- [`{m_name}`](/manage/models?action=set_model&model={m_name}) `({m_psize}, {m_qlevel})`{badges}\n"
     else:
-        raw_markdown += "Could not retrieve model list from Ollama.\n"
+        raw_markdown += "Could not retrieve model list from the LLM server.\n"
 
     raw_markdown += """
 ## Download Model
 
-<div id="ollama-pull-section">
-  <div class="ollama-pull-row">
-    <input type="text" id="ollama_pull_input" placeholder="e.g. llama3.2:3b" />
-    <button type="button" id="ollama_pull_btn" onclick="pullOllamaModel()">Pull</button>
+<div id="model-pull-section">
+  <div class="model-pull-row">
+    <input type="text" id="model_pull_input" placeholder="e.g. llama3.2:3b" />
+    <button type="button" id="model_pull_btn" onclick="pullModel()">Pull</button>
   </div>
-  <div id="ollama_pull_status" class="ollama-pull-status" style="display:none;">
-    <div id="ollama_pull_status_text"></div>
-    <div class="ollama-pull-progress-bar">
-      <div id="ollama_pull_progress_fill" class="ollama-pull-progress-fill"></div>
+  <div id="model_pull_status" class="model-pull-status" style="display:none;">
+    <div id="model_pull_status_text"></div>
+    <div class="model-pull-progress-bar">
+      <div id="model_pull_progress_fill" class="model-pull-progress-fill"></div>
     </div>
-    <div id="ollama_pull_percent"></div>
+    <div id="model_pull_percent"></div>
   </div>
 </div>
 
@@ -2070,12 +2070,12 @@ async def manage_ollama(request: Request):
 
   function getEls() {
     return {
-      input: document.getElementById('ollama_pull_input'),
-      btn: document.getElementById('ollama_pull_btn'),
-      statusDiv: document.getElementById('ollama_pull_status'),
-      statusText: document.getElementById('ollama_pull_status_text'),
-      progressFill: document.getElementById('ollama_pull_progress_fill'),
-      percentText: document.getElementById('ollama_pull_percent')
+      input: document.getElementById('model_pull_input'),
+      btn: document.getElementById('model_pull_btn'),
+      statusDiv: document.getElementById('model_pull_status'),
+      statusText: document.getElementById('model_pull_status_text'),
+      progressFill: document.getElementById('model_pull_progress_fill'),
+      percentText: document.getElementById('model_pull_percent')
     };
   }
 
@@ -2126,7 +2126,7 @@ async def manage_ollama(request: Request):
     }
   }
 
-  async function pullOllamaModel() {
+  async function pullModel() {
     var els = getEls();
     var model = els.input.value.trim();
     if (!model) return;
@@ -2136,7 +2136,7 @@ async def manage_ollama(request: Request):
     els.progressFill.style.width = '0%';
     els.percentText.textContent = '';
     try {
-      var resp = await fetch('/api/ollama/pull', {
+      var resp = await fetch('/api/models/pull', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: model })
@@ -2150,7 +2150,7 @@ async def manage_ollama(request: Request):
 
   async function checkActivePull() {
     try {
-      var resp = await fetch('/api/ollama/pull/status');
+      var resp = await fetch('/api/models/pull/status');
       var data = await resp.json();
       if (!data.active) return;
       var els = getEls();
@@ -2162,13 +2162,13 @@ async def manage_ollama(request: Request):
       } else {
         els.statusText.textContent = 'Pulling ' + data.model + '...';
       }
-      var stream = await fetch('/api/ollama/pull/stream');
+      var stream = await fetch('/api/models/pull/stream');
       await readSSE(stream, els);
       els.btn.disabled = false;
     } catch(e) {}
   }
 
-  window.pullOllamaModel = pullOllamaModel;
+  window.pullModel = pullModel;
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', checkActivePull);
@@ -2182,9 +2182,9 @@ async def manage_ollama(request: Request):
 
     doc_template = jinja_env.get_template("document.html")
     doc_data = {}
-    doc_data["unlinked_title"] = "Ollama Management"
+    doc_data["unlinked_title"] = "Model Management"
 
-    wd = WikiDoc("/temp/manage_ollama")
+    wd = WikiDoc("/temp/manage_models")
     wd.set_content(raw_markdown)
     markdown_doc = MarkdownDocTransform(wd)
     html = await asyncio.to_thread(markdown_doc.get_content)
@@ -2193,7 +2193,7 @@ async def manage_ollama(request: Request):
     return HTMLResponse(response_content)
 
 
-# /api/ollama/pull - background pull with shared progress state
+# /api/models/pull - background pull with shared progress state
 _active_pull: dict | None = None  # {"model": str, "progress": dict, "task": asyncio.Task, "event": asyncio.Event}
 
 
@@ -2201,7 +2201,7 @@ async def _run_pull(model: str):
     """Background coroutine that drives the pull and updates shared state."""
     global _active_pull
     try:
-        async for progress in ollama_mgr.pull_model(model):
+        async for progress in llm_mgr.pull_model(model):
             if _active_pull:
                 _active_pull["progress"] = progress
                 _active_pull["event"].set()
@@ -2219,8 +2219,8 @@ async def _run_pull(model: str):
         _active_pull = None
 
 
-async def ollama_pull_endpoint(request: Request):
-    """POST /api/ollama/pull - start a model pull (or attach to an existing one)."""
+async def model_pull_endpoint(request: Request):
+    """POST /api/models/pull - start a model pull (or attach to an existing one)."""
     global _active_pull
     data = await request.json()
     model = data.get("model", "").strip()
@@ -2264,8 +2264,8 @@ async def _pull_event_stream():
             yield f"data: {json.dumps(progress)}\n\n"
 
 
-async def ollama_pull_status_endpoint(request: Request):
-    """GET /api/ollama/pull/status - check if a pull is active, returns JSON."""
+async def model_pull_status_endpoint(request: Request):
+    """GET /api/models/pull/status - check if a pull is active, returns JSON."""
     if _active_pull and not _active_pull["task"].done():
         return JSONResponse({
             "active": True,
@@ -2275,8 +2275,8 @@ async def ollama_pull_status_endpoint(request: Request):
     return JSONResponse({"active": False})
 
 
-async def ollama_pull_stream_endpoint(request: Request):
-    """GET /api/ollama/pull/stream - attach to an in-progress pull's SSE stream."""
+async def model_pull_stream_endpoint(request: Request):
+    """GET /api/models/pull/stream - attach to an in-progress pull's SSE stream."""
     if not _active_pull or _active_pull["task"].done():
         async def no_pull():
             yield f"data: {json.dumps({'done': True})}\n\n"
@@ -2350,7 +2350,7 @@ async def _monitor_failures(ack_id: int | None = None) -> str:
 async def _monitor_health() -> str:
     from src.health import collect_health
 
-    checks = await collect_health(ollama_mgr)
+    checks = await collect_health(llm_mgr)
     md = "## Health\n\n| Dependency | State | Detail |\n|---|---|---|\n"
 
     def row(name, ok, detail):
@@ -2365,7 +2365,7 @@ async def _monitor_health() -> str:
     md += row("Worker", w.get("ok"),
               (f"last tick {timefmt.ago(w.get('last_tick_age_s'))}" if w.get("ok")
                else _md_esc(str(w.get("error", "")))))
-    o = checks["ollama"]
+    o = checks["llm"]
     _detail = (f"{o.get('provider')} - chat "
                f"{'ok' if o.get('chat_model', {}).get('present') else '**missing**'}, "
                f"embed {'ok' if o.get('embed_model', {}).get('present') else '**missing**'}"
@@ -2447,7 +2447,7 @@ async def _monitor_contention() -> str:
     # A task can sit in "in progress" while parked on the gate doing nothing.
     gate_md = ""
     try:
-        from config import OLLAMA_MAX_CONCURRENCY
+        from config import LLM_MAX_CONCURRENCY
         from src.llm_gate import read_gate_stats
         _g = await read_gate_stats()
         if _g["labels"]:
@@ -2466,7 +2466,7 @@ async def _monitor_contention() -> str:
             _window = (f", over the last {(time.time() - _win)/3600:.1f}h"
                        if _win else "")
             gate_md += ("Background LLM work is capped at "
-                        f"`OLLAMA_MAX_CONCURRENCY={OLLAMA_MAX_CONCURRENCY}`, so this is a "
+                        f"`LLM_MAX_CONCURRENCY={LLM_MAX_CONCURRENCY}`, so this is a "
                         "queue behind the task queue. *Wait* is time spent blocked here; "
                         "*hold* is time actually using the LLM. Counters accumulate "
                         f"until reset{_window}.\n\n")
@@ -3740,7 +3740,7 @@ async def upload_file_streaming(request: Request):
 # Answer:"""
 
 #     try:
-#         response = await ollama_mgr.generate(prompt)
+#         response = await llm_mgr.generate(prompt)
 #     except Exception as e:
 #         response = f"**Error communicating with Ollama:** {e}"
 
@@ -3805,7 +3805,7 @@ async def chat_endpoint(request: Request):
     session.revision = (data.get("revision") or "").strip()
 
     return StreamingResponse(
-        chat.chat_response_generator(session, message, ollama_mgr),
+        chat.chat_response_generator(session, message, llm_mgr),
         media_type="text/event-stream",
     )
 
@@ -3837,7 +3837,7 @@ async def chat_confirm_endpoint(request: Request):
         return JSONResponse({"error": "Session not found"}, status_code=404)
 
     return StreamingResponse(
-        chat.confirm_and_continue_generator(session, confirmed, ollama_mgr),
+        chat.confirm_and_continue_generator(session, confirmed, llm_mgr),
         media_type="text/event-stream",
     )
 
@@ -3857,7 +3857,7 @@ async def chat_continue_endpoint(request: Request):
         return JSONResponse({"error": "Session not found"}, status_code=404)
 
     return StreamingResponse(
-        chat.continue_generator(session, ollama_mgr),
+        chat.continue_generator(session, llm_mgr),
         media_type="text/event-stream",
     )
 
@@ -3915,7 +3915,7 @@ async def edit_assist_endpoint(request: Request):
         path = wd.relative_file_path() or path
 
     gen = edit_assist.stream_assist(
-        ollama_mgr, command_id, before, selection, after, frontmatter, path,
+        llm_mgr, command_id, before, selection, after, frontmatter, path,
         content=content, cursor_offset=cursor_offset,
         selection_start=selection_start, selection_end=selection_end,
         vault=vault, instruction=instruction,
@@ -4433,9 +4433,9 @@ async def health_endpoint(request: Request):
     """
     from src.health import collect_health
 
-    checks = await collect_health(ollama_mgr)
-    chat_ok = bool(checks["ollama"].get("chat_model", {}).get("present"))
-    embed_ok = bool(checks["ollama"].get("embed_model", {}).get("present"))
+    checks = await collect_health(llm_mgr)
+    chat_ok = bool(checks["llm"].get("chat_model", {}).get("present"))
+    embed_ok = bool(checks["llm"].get("embed_model", {}).get("present"))
 
     # The app serves pages without models, but chat/RAG - the point of the stack -
     # need Postgres, Redis and the chat model. The worker check is REPORTED but
@@ -4453,12 +4453,12 @@ async def health_endpoint(request: Request):
                      "are not running (is tzaraworker up?).")
     if not chat_ok:
         hints.append(
-            f"Chat model '{OLLAMA_MODEL}' not found - pull it "
-            f"(the ollama-init service does this on first `up`, or use /manage/ollama)."
+            f"Chat model '{LLM_MODEL}' not found - pull it "
+            f"(the ollama-init service does this on first `up`, or use /manage/models)."
         )
     if not embed_ok:
         hints.append(
-            f"Embedding model '{OLLAMA_EMBED_MODEL}' not found - RAG indexing will "
+            f"Embedding model '{LLM_EMBED_MODEL}' not found - RAG indexing will "
             f"fail until it is pulled."
         )
 
@@ -4469,7 +4469,7 @@ async def health_endpoint(request: Request):
 
 
 async def _noop_models() -> list:
-    """Fallback when the LLM backend hasn't finished starting (ollama_mgr is
+    """Fallback when the LLM backend hasn't finished starting (llm_mgr is
     None during a brief startup window); treated as 'no models visible yet'."""
     return []
 
@@ -4589,10 +4589,13 @@ routes = [
     Route("/test/example/delete", endpoint=delete_example_task, methods=["GET"]),
 
     Route("/manage/jupyter", endpoint=manage_jupyter, methods=["GET", "POST"]),
-    Route("/manage/ollama", endpoint=manage_ollama, methods=["GET", "POST"]),
-    Route("/api/ollama/pull", endpoint=ollama_pull_endpoint, methods=["POST"]),
-    Route("/api/ollama/pull/status", endpoint=ollama_pull_status_endpoint, methods=["GET"]),
-    Route("/api/ollama/pull/stream", endpoint=ollama_pull_stream_endpoint, methods=["GET"]),
+    Route("/manage/models", endpoint=manage_models, methods=["GET", "POST"]),
+    # Renamed from /manage/ollama; kept so bookmarks from shipped releases land.
+    Route("/manage/ollama", endpoint=lambda r: RedirectResponse("/manage/models", status_code=301),
+          methods=["GET"]),
+    Route("/api/models/pull", endpoint=model_pull_endpoint, methods=["POST"]),
+    Route("/api/models/pull/status", endpoint=model_pull_status_endpoint, methods=["GET"]),
+    Route("/api/models/pull/stream", endpoint=model_pull_stream_endpoint, methods=["GET"]),
     Route("/manage/tasks", endpoint=manage_tasks, methods=["GET"]),
     Route("/manage/monitor", endpoint=manage_monitor, methods=["GET"]),
     Route("/agents", endpoint=agents_inbox, methods=["GET"]),

@@ -5,8 +5,8 @@
 
 """LLM backend provider seam.
 
-Tzara historically spoke only to Ollama, via the `ollama` SDK, through
-`OllamaManager`. This module generalizes that into a small provider seam so the
+Tzara historically spoke only to Ollama, via the `ollama` SDK, through what is now
+`NativeLLMManager`. This module generalizes that into a small provider seam so the
 chat/agent stack can run against Ollama, Lemonade, or any OpenAI-compatible
 server, chosen by `LLM_PROVIDER` (see config.py).
 
@@ -31,7 +31,7 @@ The design rests on two ORTHOGONAL surfaces, each verified empirically
     (tools/thinking/context_length) are DISCOVERED via /api/show -- never declared
     as config flags.
 
-Structure: `OllamaManager` (ollama_manager.py) remains the native implementation
+Structure: `NativeLLMManager` (llm_manager.py) remains the native implementation
 of the management/embed/capability surface AND the `ollama-native` fallback. The
 two seam backends SUBCLASS it and override ONLY the five inference methods to go
 through /v1 (`_OpenAIChatMixin`):
@@ -53,17 +53,17 @@ from config import (
     LLM_BASE_URL,
     LLM_HAS_NATIVE_MOUNT,
     LLM_PROVIDER,
-    OLLAMA_CONTEXT_BUDGET,
-    OLLAMA_EMBED_MODEL,
-    OLLAMA_KEEP_ALIVE,
-    OLLAMA_NUM_CTX,
-    OLLAMA_URL,
+    LLM_CONTEXT_BUDGET,
+    LLM_EMBED_MODEL,
+    LLM_KEEP_ALIVE,
+    LLM_NUM_CTX,
+    LLM_URL,
 )
-from src.ollama_manager import ChatStreamChunk, OllamaManager
+from src.llm_manager import ChatStreamChunk, NativeLLMManager
 
 logger = logging.getLogger("llm_backend")
 
-# httpx timeouts for the /v1 inference path: mirror OllamaManager's generous read
+# httpx timeouts for the /v1 inference path: mirror NativeLLMManager's generous read
 # window (long generations) with a short connect so a dead host fails fast.
 _V1_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=30.0, pool=5.0)
 
@@ -241,10 +241,10 @@ def _finalize_tool_calls(acc: dict[int, dict]) -> tuple[list[dict] | None, str |
 class _OpenAIChatMixin:
     """The five inference methods, routed through an OpenAI-compatible /v1 server.
 
-    Mixed in AHEAD of OllamaManager in the MRO so these override the native chat
+    Mixed in AHEAD of NativeLLMManager in the MRO so these override the native chat
     implementations while every other method (management, embeddings, capability
     discovery, history math) is inherited unchanged. Subclasses must call
-    `_init_v1(base_url)` from __init__ after OllamaManager.__init__.
+    `_init_v1(base_url)` from __init__ after NativeLLMManager.__init__.
     """
 
     # populated by _init_v1
@@ -252,7 +252,7 @@ class _OpenAIChatMixin:
     _v1_client: httpx.AsyncClient
     # EVERY call bypasses the cache, not just the session's first. Opt-in per
     # CALLER, not per provider: set by the worker (see
-    # background_agents.make_worker_ollama) so background runs forgo the server's
+    # background_agents.make_worker_llm) so background runs forgo the server's
     # prompt cache, while the web process keeps it and cold-starts per session.
     # `cache_prompt` is a llama.cpp SERVER parameter, not a model one - servers
     # that do not implement it ignore the field.
@@ -338,7 +338,7 @@ class _OpenAIChatMixin:
     async def chat_stream(
         self, messages: list[dict], system: str | None = None, model: str | None = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream content tokens (no tools). Mirrors OllamaManager.chat_stream,
+        """Stream content tokens (no tools). Mirrors NativeLLMManager.chat_stream,
         including the per-call `model` override used by the /edit/ path."""
         self.touch()  # type: ignore[attr-defined]
         body = self._v1_body(messages, system, stream=True, model=model)
@@ -397,9 +397,9 @@ class _OpenAIChatMixin:
         await self._v1_client.aclose()
 
 
-class HybridBackend(_OpenAIChatMixin, OllamaManager):
+class HybridBackend(_OpenAIChatMixin, NativeLLMManager):
     """ollama / lemonade: native management + embeddings + capability discovery
-    (inherited from OllamaManager, all working against the server's /api/* mount),
+    (inherited from NativeLLMManager, all working against the server's /api/* mount),
     with chat/generate/streaming overridden to the /v1 mount for correct token
     streaming with tools. `v1_base` is the only per-provider difference (Ollama
     `/v1` vs Lemonade `/api/v1`); management still targets `url`."""
@@ -509,7 +509,7 @@ class LemonadeBackend(HybridBackend):
             logger.warning("lemonade /v1/load failed for %s: %s", body["model_name"], e)
 
     async def warm_model(self):
-        """Warm = apply the ASK. With OLLAMA_NUM_CTX set, load explicitly at that window
+        """Warm = apply the ASK. With LLM_NUM_CTX set, load explicitly at that window
         via /v1/load (Lemonade ignores native generate's num_ctx). Without it, use the
         inherited native generate-warm (Lemonade auto-sizes)."""
         if self.num_ctx_request > 0:
@@ -599,7 +599,7 @@ class LemonadeBackend(HybridBackend):
         return {"device": entry.get("device")} if entry is not None else None
 
 
-class OpenAIBackend(_OpenAIChatMixin, OllamaManager):
+class OpenAIBackend(_OpenAIChatMixin, NativeLLMManager):
     """Pure OpenAI-compatible server (vLLM / LocalAI / real OpenAI / llama.cpp):
     /v1 for chat AND embeddings, management DEGRADED because such servers do not
     expose Ollama's /api/* model-management surface. warm/unload/pull are no-ops,
@@ -706,10 +706,10 @@ class OpenAIBackend(_OpenAIChatMixin, OllamaManager):
 # so these stay truncation-agnostic.
 
 def embed_texts_sync(texts: list[str], model: str | None = None) -> list[list[float]]:
-    model = model or OLLAMA_EMBED_MODEL
+    model = model or LLM_EMBED_MODEL
     if LLM_HAS_NATIVE_MOUNT:
         import ollama as _ollama
-        client = _ollama.Client(host=OLLAMA_URL)
+        client = _ollama.Client(host=LLM_URL)
         return client.embed(model=model, input=texts)["embeddings"]
     with httpx.Client(timeout=_V1_TIMEOUT) as client:
         resp = client.post(f"{LLM_BASE_URL.rstrip('/')}/embeddings",
@@ -719,10 +719,10 @@ def embed_texts_sync(texts: list[str], model: str | None = None) -> list[list[fl
 
 
 async def embed_texts_async(texts: list[str], model: str | None = None) -> list[list[float]]:
-    model = model or OLLAMA_EMBED_MODEL
+    model = model or LLM_EMBED_MODEL
     if LLM_HAS_NATIVE_MOUNT:
         import ollama as _ollama
-        client = _ollama.AsyncClient(host=OLLAMA_URL)
+        client = _ollama.AsyncClient(host=LLM_URL)
         resp = await client.embed(model=model, input=texts)
         return resp["embeddings"]
     async with httpx.AsyncClient(timeout=_V1_TIMEOUT) as client:
@@ -742,20 +742,20 @@ def create_llm_backend(
     context_budget: int | None = None,
 ):
     """Construct the LLM backend for the configured LLM_PROVIDER. Callers pass the
-    same args they gave OllamaManager; provider selection and /v1 base URL come
-    from config. Returns an object duck-compatible with OllamaManager (same method
+    same args they gave NativeLLMManager; provider selection and /v1 base URL come
+    from config. Returns an object duck-compatible with NativeLLMManager (same method
     surface), so no call site changes beyond construction. `num_ctx_request` is the
-    load ASK (OLLAMA_NUM_CTX); `context_budget` is the internal history budget
-    (OLLAMA_CONTEXT_BUDGET); both default from config when omitted."""
-    url = url if url is not None else OLLAMA_URL
+    load ASK (LLM_NUM_CTX); `context_budget` is the internal history budget
+    (LLM_CONTEXT_BUDGET); both default from config when omitted."""
+    url = url if url is not None else LLM_URL
     model = model if model is not None else ""
-    keep_alive = keep_alive if keep_alive is not None else OLLAMA_KEEP_ALIVE
-    num_ctx_request = num_ctx_request if num_ctx_request is not None else OLLAMA_NUM_CTX
-    context_budget = context_budget if context_budget is not None else OLLAMA_CONTEXT_BUDGET
+    keep_alive = keep_alive if keep_alive is not None else LLM_KEEP_ALIVE
+    num_ctx_request = num_ctx_request if num_ctx_request is not None else LLM_NUM_CTX
+    context_budget = context_budget if context_budget is not None else LLM_CONTEXT_BUDGET
 
     if LLM_PROVIDER == "ollama-native":
         # Pre-seam native path: full Ollama SDK for chat too. Kill-switch.
-        return OllamaManager(url=url, model=model, keep_alive=keep_alive,
+        return NativeLLMManager(url=url, model=model, keep_alive=keep_alive,
                              num_ctx_request=num_ctx_request, context_budget=context_budget)
     if LLM_PROVIDER == "openai":
         return OpenAIBackend(v1_base=LLM_BASE_URL, model=model,

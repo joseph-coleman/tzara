@@ -33,8 +33,8 @@ from typing import Any, AsyncGenerator, Awaitable, Callable
 from config import (
     AGENT_TOOL_THINK,
     DEFAULT_VAULT,
-    OLLAMA_EDIT_CONTEXT_BUDGET,
-    OLLAMA_MODEL,
+    LLM_EDIT_CONTEXT_BUDGET,
+    LLM_MODEL,
 )
 from src import chunker
 from src import llm_backend
@@ -237,7 +237,7 @@ class AssistContext:
     doc_id: str | None       # .md-suffixed doc_id for DB lookups
     vault: str               # the vault this document lives in (retrieval scope)
     frontmatter: dict | None
-    ollama_mgr: Any          # opaque app handle; providers may need embeddings/chat
+    llm_mgr: Any          # opaque app handle; providers may need embeddings/chat
     # Full live editor content (None when frontend hasn't sent it - fall back
     # to before/after windows). cursor_offset is the byte/char index of the
     # caret in `content`; required to render a `<<CURSOR>>` marker for
@@ -1184,10 +1184,10 @@ async def _run_admonition(actx: AssistContext) -> AsyncGenerator[str, None]:
         return
 
     messages = [{"role": "user", "content": f"Passage:\n```\n{sel}\n```"}]
-    model = OLLAMA_MODEL
+    model = LLM_MODEL
     parts: list[str] = []
     try:
-        async for token in actx.ollama_mgr.chat_stream(
+        async for token in actx.llm_mgr.chat_stream(
             messages, system=_ADMONITION_SYS, model=model,
         ):
             parts.append(token)
@@ -1385,7 +1385,7 @@ COMMANDS: dict[str, WritingCommand] = {
         operation="replace",
         system_prompt=_PROSE_TO_MERMAID_SYS,
         user_template=_structural_user("prose description", "mermaid diagram"),
-        model=OLLAMA_MODEL,
+        model=LLM_MODEL,
     ),
     "mermaid_to_prose": WritingCommand(
         id="mermaid_to_prose",
@@ -1394,7 +1394,7 @@ COMMANDS: dict[str, WritingCommand] = {
         operation="replace",
         system_prompt=_MERMAID_TO_PROSE_SYS,
         user_template=_structural_user("mermaid diagram", "prose description"),
-        model=OLLAMA_MODEL,
+        model=LLM_MODEL,
     ),
     "table_to_mermaid": WritingCommand(
         id="table_to_mermaid",
@@ -1403,7 +1403,7 @@ COMMANDS: dict[str, WritingCommand] = {
         operation="replace",
         system_prompt=_TABLE_TO_MERMAID_SYS,
         user_template=_structural_user("markdown table", "mermaid diagram"),
-        #model=OLLAMA_MODEL,
+        #model=LLM_MODEL,
     ),
     "autolink": WritingCommand(
         id="autolink",
@@ -1547,14 +1547,14 @@ async def _run_custom(actx: "AssistContext", cmd: WritingCommand, instruction: s
     system = _custom_system(instruction, actx.frontmatter, cmd.operation, has_context)
 
     messages = [{"role": "user", "content": user_msg}]
-    model = cmd.model or OLLAMA_MODEL
+    model = cmd.model or LLM_MODEL
     # Buffer the full reply so we can strip a bare wrapping fence before it lands
     # in the document (streaming can't retroactively remove a leading ``` line).
     # The status event keeps the ghost widget from looking dead while we wait.
     yield _sse({"status": "Working…"})
     parts: list[str] = []
     try:
-        async for token in actx.ollama_mgr.chat_stream(messages, system=system, model=model):
+        async for token in actx.llm_mgr.chat_stream(messages, system=system, model=model):
             parts.append(token)
     except Exception as e:
         yield _sse({"error": str(e)})
@@ -1695,7 +1695,7 @@ async def _editor_broker_post(route: str, payload: dict) -> dict:
         return resp.json()
 
 
-async def _run_editor_tool(ollama_mgr, slug: str, actx: "AssistContext"):
+async def _run_editor_tool(llm_mgr, slug: str, actx: "AssistContext"):
     """Run a `type: editor` tool: a synchronous LLM tool-calling loop, streaming
     the transformed text into the ghost-text UI.
 
@@ -1856,8 +1856,8 @@ async def _run_editor_tool(ollama_mgr, slug: str, actx: "AssistContext"):
         # <<CURSOR>> marker when it fits, else outline + windows, else windows.
         # Clamped to the model's real window so an oversized configured budget
         # can't select a tier the backend then silently truncates.
-        window = await ollama_mgr.get_context_length()
-        budget = min(OLLAMA_EDIT_CONTEXT_BUDGET or window, window)
+        window = await llm_mgr.get_context_length()
+        budget = min(LLM_EDIT_CONTEXT_BUDGET or window, window)
         tier, doc_block = _build_doc_context(content, actx.cursor_offset, budget)
         logger.debug("editor:%s cursor doc-context tier=%s", slug, tier)
         b, a = _range_windows(actx)
@@ -1897,7 +1897,7 @@ async def _run_editor_tool(ollama_mgr, slug: str, actx: "AssistContext"):
         # Same budget the agent path uses: the injection cap and the consolidation
         # turn's generation cap come from ONE figure, scaled to the model's context
         # window, so text generated past what will be injected is not thrown away.
-        mem_inject_chars, mem_gen_tokens = await memory_budget(ollama_mgr)
+        mem_inject_chars, mem_gen_tokens = await memory_budget(llm_mgr)
         # Editor-framed intro (NOT the agent "plan/decisions/use your tools" prose):
         # an editor keeps a running note across invocations, it doesn't crawl a vault.
         mem_section = MemoryProvider(
@@ -1918,7 +1918,7 @@ async def _run_editor_tool(ollama_mgr, slug: str, actx: "AssistContext"):
         from src.context_providers import LedgerProvider
         prior_ledgers = read_agent_ledgers(vault, f"editors/{slug}")
         led_provider = LedgerProvider(
-            prior_ledgers, char_cap=await ledger_budget(ollama_mgr),
+            prior_ledgers, char_cap=await ledger_budget(llm_mgr),
             heading="Your ledgers",
             intro=("Durable rows you recorded on earlier runs of this tool. "
                    "Unlike the note above they are maintained for you and cannot "
@@ -1947,7 +1947,7 @@ async def _run_editor_tool(ollama_mgr, slug: str, actx: "AssistContext"):
                     system_prompt=system,
                     tool_defs=tool_defs,
                     tool_names=tool_names,
-                    ollama_mgr=ollama_mgr,
+                    llm_mgr=llm_mgr,
                     execute_tool=_execute,
                     status_label=lambda n: f"Running {n}…",
                     activity_narration=_narrate_tool_call,
@@ -1986,7 +1986,7 @@ async def _run_editor_tool(ollama_mgr, slug: str, actx: "AssistContext"):
                 instruction = editor_instruction(
                     tool_def.memory_prompt, tool_def.label or slug, prior_memory)
                 consolidated = await asyncio.wait_for(
-                    summarize_conversation(messages, instruction, ollama_mgr,
+                    summarize_conversation(messages, instruction, llm_mgr,
                                            max_tokens=mem_gen_tokens),
                     timeout=AGENT_MEMORY_TURN_TIMEOUT_S)
                 if consolidated.strip():
@@ -2000,7 +2000,7 @@ async def _run_editor_tool(ollama_mgr, slug: str, actx: "AssistContext"):
                 try:
                     ops = await asyncio.wait_for(
                         ledger_ops_from_run(prior_ledgers, messages, consolidated,
-                                            ollama_mgr, label=f"editor:{slug}"),
+                                            llm_mgr, label=f"editor:{slug}"),
                         timeout=AGENT_LEDGER_TURN_TIMEOUT_S)
                 except Exception:   # noqa: BLE001 - never costs the note
                     logger.exception("editor ledger turn failed for %s", slug)
@@ -2089,7 +2089,7 @@ async def _run_editor_tool(ollama_mgr, slug: str, actx: "AssistContext"):
 # ---------------------------------------------------------------------------
 
 async def stream_assist(
-    ollama_mgr,
+    llm_mgr,
     command_id: str,
     before: str = "",
     selection: str = "",
@@ -2132,7 +2132,7 @@ async def stream_assist(
         doc_id=_path_to_doc_id(path),
         vault=vault,
         frontmatter=frontmatter,
-        ollama_mgr=ollama_mgr,
+        llm_mgr=llm_mgr,
         content=content,
         cursor_offset=cursor_offset,
         selection_start=selection_start,
@@ -2146,7 +2146,7 @@ async def stream_assist(
     # their own range validation and take the context object as-is.
     if command_id.startswith("editor:"):
         async for evt in _run_editor_tool(
-                ollama_mgr, command_id[len("editor:"):], actx):
+                llm_mgr, command_id[len("editor:"):], actx):
             yield evt
         return
 
@@ -2218,13 +2218,13 @@ async def stream_assist(
         sources.extend(out.get("sources") or [])
 
     if cmd.range_source == "cursor":
-        # Edit context budget: per-command override > OLLAMA_EDIT_CONTEXT_BUDGET opt-in >
+        # Edit context budget: per-command override > LLM_EDIT_CONTEXT_BUDGET opt-in >
         # the chat model's resolved window. Then clamp to that window so a stale/oversized
         # budget can't pick a doc-context tier the model silently truncates (mirrors the
         # chat-path measured-actual clamp). get_context_length() is cached + already
         # ask/measured/clamped, so the edit path inherits all of it for free.
-        window = await ollama_mgr.get_context_length()
-        budget = cmd.context_budget_tokens or OLLAMA_EDIT_CONTEXT_BUDGET or window
+        window = await llm_mgr.get_context_length()
+        budget = cmd.context_budget_tokens or LLM_EDIT_CONTEXT_BUDGET or window
         budget = min(budget, window)
         tier, doc_block = _build_doc_context(content, cursor_offset, budget)
         ctx["doc_context"] = doc_block
@@ -2237,9 +2237,9 @@ async def stream_assist(
     user_msg = cmd.user_template(actx.before, actx.selection, actx.after, ctx)
     messages = [{"role": "user", "content": user_msg}]
 
-    model = cmd.model or OLLAMA_MODEL
+    model = cmd.model or LLM_MODEL
     try:
-        async for token in ollama_mgr.chat_stream(messages, system=system, model=model):
+        async for token in llm_mgr.chat_stream(messages, system=system, model=model):
             yield _sse({"token": token})
         yield _sse({"done": True})
     except Exception as e:

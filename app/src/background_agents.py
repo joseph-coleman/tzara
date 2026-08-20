@@ -61,11 +61,11 @@ from config import (
     AGENT_OUTPUT_DIR,
     AGENT_RUN_TIMEOUT_S,
     AGENT_TOOL_THINK,
-    OLLAMA_CONTEXT_BUDGET,
-    OLLAMA_KEEP_ALIVE,
-    OLLAMA_MODEL,
-    OLLAMA_NUM_CTX,
-    OLLAMA_URL,
+    LLM_CONTEXT_BUDGET,
+    LLM_KEEP_ALIVE,
+    LLM_MODEL,
+    LLM_NUM_CTX,
+    LLM_URL,
 )
 from src.agent_capabilities import uses_ledgers
 from src.agent_runner import MAX_AGENT_ITERATIONS, AgentRunResult, run_agent_loop
@@ -76,7 +76,7 @@ from src.context_providers import (
     MemoryProvider,
     assemble_system_prompt,
 )
-from src.ollama_manager import OllamaManager
+from src.llm_manager import NativeLLMManager
 from src import llm_backend
 from src.llm_backend import create_llm_backend
 from src import timefmt
@@ -104,20 +104,20 @@ class AgentOutputSuspect(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Worker-side Ollama manager
+# Worker-side LLM manager
 # ---------------------------------------------------------------------------
 
-def make_worker_ollama() -> OllamaManager:
-    """Build a worker-side Ollama manager from config (the worker has none today).
+def make_worker_llm() -> NativeLLMManager:
+    """Build a worker-side LLM manager from config (the worker has none today).
 
     Per-call concurrency gating is applied by the engine (run_agent_loop's
     ``llm_gate`` param), not by a manager subclass - see run_background_agent.
 
     Returns the configured LLM backend (LLM_PROVIDER); all backends subclass
-    OllamaManager, so the annotation and every downstream call site hold."""
-    mgr = create_llm_backend(url=OLLAMA_URL, model=OLLAMA_MODEL,
-                             keep_alive=OLLAMA_KEEP_ALIVE, num_ctx_request=OLLAMA_NUM_CTX,
-                             context_budget=OLLAMA_CONTEXT_BUDGET)
+    NativeLLMManager, so the annotation and every downstream call site hold."""
+    mgr = create_llm_backend(url=LLM_URL, model=LLM_MODEL,
+                             keep_alive=LLM_KEEP_ALIVE, num_ctx_request=LLM_NUM_CTX,
+                             context_budget=LLM_CONTEXT_BUDGET)
     # Scoped to the worker on purpose: this is where a stale server-side KV slot
     # costs a whole unattended run, and where the reprocess latency is free. The
     # ollama-native fallback has no /v1 body to carry the field; setattr is
@@ -540,7 +540,7 @@ async def apply_ledger_ops(vault_id: str, owner: str, ops: list[dict]) -> list[s
     return notes
 
 
-async def memory_budget(ollama_mgr) -> tuple[int, int]:
+async def memory_budget(llm_mgr) -> tuple[int, int]:
     """(inject_chars, generate_tokens) for agent memory, derived TOGETHER.
 
     THE single source of truth for the memory size budget. Both numbers come from
@@ -555,7 +555,7 @@ async def memory_budget(ollama_mgr) -> tuple[int, int]:
     """
     ctx = 0
     try:
-        ctx = int(await ollama_mgr.get_context_length() or 0)
+        ctx = int(await llm_mgr.get_context_length() or 0)
     except Exception:
         ctx = 0
 
@@ -567,7 +567,7 @@ async def memory_budget(ollama_mgr) -> tuple[int, int]:
     return chars, int(chars / CHARS_PER_TOKEN)
 
 
-async def ledger_budget(ollama_mgr) -> int:
+async def ledger_budget(llm_mgr) -> int:
     """Injection cap for the ledgers page, scaled to the context window.
 
     Its own fraction rather than a share of the memory budget: the two are
@@ -577,7 +577,7 @@ async def ledger_budget(ollama_mgr) -> int:
     """
     ctx = 0
     try:
-        ctx = int(await ollama_mgr.get_context_length() or 0)
+        ctx = int(await llm_mgr.get_context_length() or 0)
     except Exception:
         ctx = 0
     chars = (int(ctx * AGENT_LEDGER_CONTEXT_FRACTION * CHARS_PER_TOKEN) if ctx > 0
@@ -620,7 +620,7 @@ def _transcript_tail(messages: list[dict], max_chars: int) -> str:
 
 
 async def ledger_ops_from_run(book: dict, messages: list[dict], note: str,
-                              ollama_mgr, label: str = "") -> list[dict]:
+                              llm_mgr, label: str = "") -> list[dict]:
     """Memory step, call 2: a tool-only turn that decides what to record.
 
     Returns ops for apply_ledger_ops; performs NO writes, so the agent path can
@@ -654,7 +654,7 @@ async def ledger_ops_from_run(book: dict, messages: list[dict], note: str,
     tool_defs = [spec["def"]]
 
     calls, stream_error = None, None
-    stream = ollama_mgr.chat_stream_with_tools(
+    stream = llm_mgr.chat_stream_with_tools(
         [{"role": "user", "content": prompt}], tool_defs, think=False)
     try:
         async with get_llm_gate("agent:ledger"):
@@ -691,7 +691,7 @@ async def ledger_ops_from_run(book: dict, messages: list[dict], note: str,
 
 async def _record_ledgers_from_run(agent: BackgroundAgent, vault_id: str,
                                    messages: list[dict], note: str,
-                                   ollama_mgr) -> list[str]:
+                                   llm_mgr) -> list[str]:
     """Agent-side call 2: decide what to record, then record it.
 
     The BACKSTOP half of ledger recording. An agent granted `remember` records as
@@ -703,7 +703,7 @@ async def _record_ledgers_from_run(agent: BackgroundAgent, vault_id: str,
     """
     book = read_agent_ledgers(vault_id, agent.owner)
     ops = await ledger_ops_from_run(
-        book, messages, note, ollama_mgr, label=f"{agent.name}:{vault_id}")
+        book, messages, note, llm_mgr, label=f"{agent.name}:{vault_id}")
     if not ops:
         return []
     return await apply_ledger_ops(vault_id, agent.owner, ops)
@@ -711,7 +711,7 @@ async def _record_ledgers_from_run(agent: BackgroundAgent, vault_id: str,
 
 async def _consolidate_agent_memory(agent: BackgroundAgent, vault_id: str,
                                     messages: list[dict], prior_memory_text: str,
-                                    ollama_mgr) -> None:
+                                    llm_mgr) -> None:
     """The reserved memory turn: one tool-free LLM call that rewrites memory.md.
 
     NEVER clobbers on failure: summarize_conversation returns "" on error/overflow
@@ -736,7 +736,7 @@ async def _consolidate_agent_memory(agent: BackgroundAgent, vault_id: str,
     # overflowing; atomic groups keep tool results with their calls.
     bounded = messages
     try:
-        ctx = await ollama_mgr.get_context_length()
+        ctx = await llm_mgr.get_context_length()
         if ctx:
             instr_tokens = estimate_tokens([{"role": "user", "content": instruction}])
             bounded, trimmed = apply_sliding_window(
@@ -749,13 +749,13 @@ async def _consolidate_agent_memory(agent: BackgroundAgent, vault_id: str,
     except Exception as e:
         logger.debug("memory turn: could not bound transcript (%s); sending as-is", e)
 
-    inject_chars, gen_tokens = await memory_budget(ollama_mgr)
+    inject_chars, gen_tokens = await memory_budget(llm_mgr)
 
     # Labeled separately from the agent's own turns: memory consolidation is a
     # distinct kind of LLM spend, and worth being able to see on its own.
     async with get_llm_gate("agent:memory"):
         text = await asyncio.wait_for(
-            summarize_conversation(bounded, instruction, ollama_mgr,
+            summarize_conversation(bounded, instruction, llm_mgr,
                                    max_tokens=gen_tokens),
             timeout=AGENT_MEMORY_TURN_TIMEOUT_S,
         )
@@ -782,7 +782,7 @@ async def _consolidate_agent_memory(agent: BackgroundAgent, vault_id: str,
     # whose facts most need recording somewhere durable.
     try:
         notes = await asyncio.wait_for(
-            _record_ledgers_from_run(agent, vault_id, messages, text, ollama_mgr),
+            _record_ledgers_from_run(agent, vault_id, messages, text, llm_mgr),
             timeout=AGENT_LEDGER_TURN_TIMEOUT_S)
         if notes:
             logger.info("ledger turn for %s:%s - %s",
@@ -795,7 +795,7 @@ async def _consolidate_agent_memory(agent: BackgroundAgent, vault_id: str,
 # Runner
 # ---------------------------------------------------------------------------
 
-async def run_background_agent(agent: BackgroundAgent, vault_id: str, ollama_mgr,
+async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
                                cancel_check=None, kickoff_extra: str | None = None,
                                trigger_events: list[dict] | None = None,
                                trigger_source: str = "manual") -> dict:
@@ -823,7 +823,7 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, ollama_mgr
         prior_memory_text = _read_agent_memory(vault_id, agent.memory_rel)
         # Same budget the memory TURN generates against, so nothing written last
         # run is silently dropped on the way back in this run.
-        _inject_chars, _ = await memory_budget(ollama_mgr)
+        _inject_chars, _ = await memory_budget(llm_mgr)
         providers.append(MemoryProvider(
             prior_memory_text, name="memory", priority=20,
             char_cap=_inject_chars))
@@ -839,7 +839,7 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, ollama_mgr
         book = read_agent_ledgers(vault_id, agent.owner)
         ledgers_provider = LedgerProvider(
             book, name="ledgers", priority=21,
-            char_cap=await ledger_budget(ollama_mgr))
+            char_cap=await ledger_budget(llm_mgr))
         providers.append(ledgers_provider)
         if ledgers_provider.stubbed:
             ledger_injection_note = (
@@ -901,7 +901,7 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, ollama_mgr
             system_prompt=system_prompt,
             tool_defs=agent.tool_defs,
             tool_names=agent.tool_names,
-            ollama_mgr=ollama_mgr,
+            llm_mgr=llm_mgr,
             execute_tool=_exec,
             status_label=lambda name: f"Running {name}…",
             activity_narration=_narrate_tool_call,
@@ -1030,7 +1030,7 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, ollama_mgr
     if agent.memory and (error is None or isinstance(error, TimeoutError) or stream_error_run):
         try:
             await _consolidate_agent_memory(
-                agent, vault_id, messages, prior_memory_text, ollama_mgr)
+                agent, vault_id, messages, prior_memory_text, llm_mgr)
         except Exception:       # noqa: BLE001 - memory must never fail the run
             logger.exception(
                 "memory consolidation failed for %s:%s (prior memory preserved)",
@@ -1050,7 +1050,7 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, ollama_mgr
         # all - "recorded nothing" is itself the answer being looked for.
         show_ledgers = bool(uses_ledgers(agent.memory, agent.tool_names)
                             or ledger_during or ledger_reserved)
-        await _write_run_log(agent, vault_id, ollama_mgr, run_result, duration,
+        await _write_run_log(agent, vault_id, llm_mgr, run_result, duration,
                              output_path, error, run_id, n_staged, n_applied,
                              trigger_events, trigger_source,
                              (ledger_during, ledger_reserved) if show_ledgers else None,
@@ -1071,7 +1071,7 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, ollama_mgr
     }
 
 
-async def _write_run_log(agent: BackgroundAgent, vault_id: str, ollama_mgr,
+async def _write_run_log(agent: BackgroundAgent, vault_id: str, llm_mgr,
                          run_result: AgentRunResult, duration: float,
                          output_path: str | None, error: Exception | None,
                          run_id: str = "", n_staged: int = 0,
@@ -1095,7 +1095,7 @@ async def _write_run_log(agent: BackgroundAgent, vault_id: str, ollama_mgr,
         "|---|---|",
         f"| run_id | `{run_id or '?'}` |",
         f"| vault | {vault_id} |",
-        f"| model | {getattr(ollama_mgr, 'model', '?')} |",
+        f"| model | {getattr(llm_mgr, 'model', '?')} |",
         f"| definition | `{agent.def_hash or '?'}` |",
         f"| duration | {duration:.1f}s |",
         f"| tool calls | {len(run_result.activity_log)} |",

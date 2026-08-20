@@ -929,7 +929,7 @@ def _clean_agent_response(text: str) -> str:
 
 
 async def _contextualize_query(
-    query: str, messages: list[dict], scratchpad, ollama_mgr
+    query: str, messages: list[dict], scratchpad, llm_mgr
 ) -> str:
     """Rewrite a search query using conversation context to make it self-contained."""
     # Skip if early in conversation (first user message = no ambiguity)
@@ -963,7 +963,7 @@ async def _contextualize_query(
     logger.info(prompt)
 
     try:
-        result = await ollama_mgr.generate(prompt)
+        result = await llm_mgr.generate(prompt)
         rewritten = result.strip().strip('"')
         if rewritten and len(rewritten) < 500:
             logger.info("Query rewrite: '%s' -> '%s'", query, rewritten)
@@ -977,7 +977,7 @@ async def _contextualize_query(
 async def _do_search_wiki(
     tool_args: dict,
     session=None,
-    ollama_mgr=None,
+    llm_mgr=None,
     scratchpad=None,
     status_callback=None,
 ) -> str:
@@ -988,11 +988,11 @@ async def _do_search_wiki(
     if not query:
         return "Error: query is required"
     # Rewrite conversational queries for better retrieval
-    if session and ollama_mgr:
+    if session and llm_mgr:
         if status_callback:
             await status_callback("Refining search query...")
         query = await _contextualize_query(
-            query, session.messages, scratchpad, ollama_mgr
+            query, session.messages, scratchpad, llm_mgr
         )
     else:
         logger.info("Contextual Search was bypassed.")
@@ -1032,7 +1032,7 @@ async def _execute_tool(
     tool_args: dict,
     scratchpad: DocumentScratchpad,
     session=None,
-    ollama_mgr=None,
+    llm_mgr=None,
     status_callback=None,
 ) -> str:
     """Execute a tool call and return result text for the model."""
@@ -1058,7 +1058,7 @@ async def _execute_tool(
 
     elif tool_name == "search_wiki":
         return await _do_search_wiki(
-            tool_args, session=session, ollama_mgr=ollama_mgr,
+            tool_args, session=session, llm_mgr=llm_mgr,
             scratchpad=scratchpad, status_callback=status_callback,
         )
 
@@ -1234,14 +1234,14 @@ async def _execute_global_tool(
     tool_args: dict,
     collection: ScratchpadCollection,
     session=None,
-    ollama_mgr=None,
+    llm_mgr=None,
     status_callback=None,
 ) -> str:
     """Execute a global-mode tool call and return result text for the model."""
 
     if tool_name == "search_wiki":
         return await _do_search_wiki(
-            tool_args, session=session, ollama_mgr=ollama_mgr,
+            tool_args, session=session, llm_mgr=llm_mgr,
             scratchpad=None, status_callback=status_callback,
         )
 
@@ -1433,7 +1433,7 @@ async def confirm_action(session: ChatSession, confirmed: bool) -> dict:
 
 
 async def _run_pending_python_generator(
-    session: ChatSession, confirmed: bool, ollama_mgr
+    session: ChatSession, confirmed: bool, llm_mgr
 ) -> AsyncGenerator[str, None]:
     """Execute (or decline) the agent's approval-gated run_python code.
 
@@ -1453,7 +1453,7 @@ async def _run_pending_python_generator(
             "Do not propose the same code again unless they ask. Answer using what "
             "you already know, or ask how they'd like to proceed."
         )
-        async for event in _agent_loop(session, continuation, ollama_mgr):
+        async for event in _agent_loop(session, continuation, llm_mgr):
             yield event
         return
 
@@ -1488,12 +1488,12 @@ async def _run_pending_python_generator(
         "code. Any figures have already been shown to the user.\n\n"
         "--- output ---\n" + output
     )
-    async for event in _agent_loop(session, continuation, ollama_mgr):
+    async for event in _agent_loop(session, continuation, llm_mgr):
         yield event
 
 
 async def confirm_and_continue_generator(
-    session: ChatSession, confirmed: bool, ollama_mgr
+    session: ChatSession, confirmed: bool, llm_mgr
 ) -> AsyncGenerator[str, None]:
     """Confirm/reject pending action, then optionally continue the agent loop.
 
@@ -1503,7 +1503,7 @@ async def confirm_and_continue_generator(
     """
     # run_python approval is handled specially (executes code + streams figures).
     if session.pending_python is not None:
-        async for event in _run_pending_python_generator(session, confirmed, ollama_mgr):
+        async for event in _run_pending_python_generator(session, confirmed, llm_mgr):
             yield event
         return
 
@@ -1529,14 +1529,14 @@ async def confirm_and_continue_generator(
             "Continue with any remaining steps that have NOT already been completed. "
             "Do not re-read or re-edit documents that were already modified."
         )
-        async for event in _agent_loop(session, continuation_msg, ollama_mgr):
+        async for event in _agent_loop(session, continuation_msg, llm_mgr):
             yield event
     else:
         yield f"data: {json.dumps({'done': True, 'session_id': session.session_id})}\n\n"
 
 
 async def continue_generator(
-    session: ChatSession, ollama_mgr
+    session: ChatSession, llm_mgr
 ) -> AsyncGenerator[str, None]:
     """Resume the agent loop after it hit its iteration budget (manual Continue).
 
@@ -1558,7 +1558,7 @@ async def continue_generator(
         "left off. Do NOT repeat searches, reads, or edits you have already "
         "performed - refer to the completed-actions note in the prior message."
     )
-    async for event in _agent_loop(session, continuation_msg, ollama_mgr):
+    async for event in _agent_loop(session, continuation_msg, llm_mgr):
         yield event
 
 
@@ -1567,7 +1567,7 @@ async def continue_generator(
 # ---------------------------------------------------------------------------
 
 async def _chat_response_generator_streaming(
-    session: ChatSession, user_message: str, ollama_mgr
+    session: ChatSession, user_message: str, llm_mgr
 ) -> AsyncGenerator[str, None]:
     """Yield SSE-formatted tokens from a streaming Ollama chat response."""
     try:
@@ -1593,23 +1593,23 @@ async def _chat_response_generator_streaming(
         #     _maybe_checkpoint); the sliding-window trim below is the
         #     append-only safety net that only drops, never summarizes.
         system_prompt_tokens = int(len(system_prompt) / CHARS_PER_TOKEN)
-        async for evt in _maybe_checkpoint(session, system_prompt_tokens, ollama_mgr):
+        async for evt in _maybe_checkpoint(session, system_prompt_tokens, llm_mgr):
             yield evt
 
         # 4. Trim to sliding window (dynamic based on model context size)
         msgs_before_trim = list(session.messages)
         session.messages = _trim_message_history(
             session.messages,
-            max_messages=ollama_mgr.compute_max_messages(),
+            max_messages=llm_mgr.compute_max_messages(),
             system_prompt=system_prompt,
-            context_length=ollama_mgr._context_length or 4096,
+            context_length=llm_mgr._context_length or 4096,
         )
         log_trim("streaming_trim", msgs_before_trim, session.messages)
         log_history_stats("streaming/post-trim", session.messages, system_prompt)
 
         # 5. Stream from Ollama
         full_response = ""
-        async for token in ollama_mgr.chat_stream(session.messages, system=system_prompt):
+        async for token in llm_mgr.chat_stream(session.messages, system=system_prompt):
             full_response += token
             yield f"data: {json.dumps({'token': token})}\n\n"
 
@@ -1677,10 +1677,10 @@ def _activity_narration(tool_name: str, tool_args: dict) -> str:
     return f"Executed {tool_name}"
 
 
-async def _summarize_span(span_text: str, ollama_mgr) -> str:
+async def _summarize_span(span_text: str, llm_mgr) -> str:
     """Summarize a folded span of conversation using the active chat model.
 
-    Uses the SAME model as the chat (via ollama_mgr.generate) so the span never
+    Uses the SAME model as the chat (via llm_mgr.generate) so the span never
     exceeds the summarizer's context window. Returns "" on failure so the caller
     can skip the checkpoint and fall back to the sliding-window safety net.
     """
@@ -1695,7 +1695,7 @@ async def _summarize_span(span_text: str, ollama_mgr) -> str:
         "Output ONLY the summary text. No preamble, no headings, no code fences."
     )
     try:
-        result = await ollama_mgr.generate(prompt)
+        result = await llm_mgr.generate(prompt)
         return (result or "").strip()
     except Exception as e:
         logger.warning("checkpoint summarization failed: %s", e)
@@ -1703,7 +1703,7 @@ async def _summarize_span(span_text: str, ollama_mgr) -> str:
 
 
 async def _maybe_checkpoint(
-    session: ChatSession, system_prompt_tokens: int, ollama_mgr
+    session: ChatSession, system_prompt_tokens: int, llm_mgr
 ) -> AsyncGenerator[str, None]:
     """Fold the oldest span of history into one summary message when it grows large.
 
@@ -1718,7 +1718,7 @@ async def _maybe_checkpoint(
     is invisible to the client) on the common case where no checkpoint fires.
     Callers drain it with `async for evt in _maybe_checkpoint(...): yield evt`.
     """
-    budget = ollama_mgr.compute_history_budget_tokens(system_prompt_tokens)
+    budget = llm_mgr.compute_history_budget_tokens(system_prompt_tokens)
     span = select_checkpoint_span(session.messages, budget)
     if not span:
         return
@@ -1727,7 +1727,7 @@ async def _maybe_checkpoint(
     span_text = render_messages_for_summary(fold_msgs)
     # Surface "compaction happening" before the (potentially slow) summarize call.
     yield f"data: {json.dumps({'status': 'Compacting conversation history…'})}\n\n"
-    summary = await _summarize_span(span_text, ollama_mgr)
+    summary = await _summarize_span(span_text, llm_mgr)
     if not summary:
         # Summarization failed - leave history intact for run_compaction_pipeline.
         return
@@ -1752,7 +1752,7 @@ async def _maybe_checkpoint(
 
 
 async def _agent_loop(
-    session: ChatSession, user_message: str, ollama_mgr
+    session: ChatSession, user_message: str, llm_mgr
 ) -> AsyncGenerator[str, None]:
     """Agent loop: iterative tool calling with scratchpad. Yields SSE events.
 
@@ -1797,20 +1797,20 @@ async def _agent_loop(
             tool_defs = TOOL_DEFINITIONS
             tool_names = _TOOL_NAMES
 
-        context_length = ollama_mgr._context_length or 4096
+        context_length = llm_mgr._context_length or 4096
         system_prompt, system_prompt_tokens = assemble_system_prompt(providers)
 
         # 3. Append user message, then checkpoint-summarize old history if large,
         #    then run the append-only sliding-window safety net.
         session.messages.append({"role": "user", "content": user_message})
         log_history_stats("user-added", session.messages, system_prompt)
-        async for evt in _maybe_checkpoint(session, system_prompt_tokens, ollama_mgr):
+        async for evt in _maybe_checkpoint(session, system_prompt_tokens, llm_mgr):
             yield evt
         session.messages = run_compaction_pipeline(
             session.messages,
             system_prompt_tokens=system_prompt_tokens,
             context_length=context_length,
-            max_messages=ollama_mgr.compute_max_messages(),
+            max_messages=llm_mgr.compute_max_messages(),
         )
         log_history_stats("post-compaction/pre-loop", session.messages, system_prompt)
 
@@ -1826,7 +1826,7 @@ async def _agent_loop(
                 assert collection is not None
                 return await _execute_global_tool(
                     name, args, collection,
-                    session=session, ollama_mgr=ollama_mgr,
+                    session=session, llm_mgr=llm_mgr,
                     status_callback=status_callback,
                 )
             needs_approval = frozenset()
@@ -1835,7 +1835,7 @@ async def _agent_loop(
                 assert scratchpad is not None
                 return await _execute_tool(
                     name, args, scratchpad,
-                    session=session, ollama_mgr=ollama_mgr,
+                    session=session, llm_mgr=llm_mgr,
                     status_callback=status_callback,
                 )
             # run_python is the only approval-gated tool, and only in document mode.
@@ -1847,7 +1847,7 @@ async def _agent_loop(
             system_prompt=system_prompt,
             tool_defs=tool_defs,
             tool_names=tool_names,
-            ollama_mgr=ollama_mgr,
+            llm_mgr=llm_mgr,
             execute_tool=execute_tool,
             status_label=status_label,
             activity_narration=narration_fn,
@@ -2003,7 +2003,7 @@ async def _agent_loop(
             session.messages,
             system_prompt_tokens=system_prompt_tokens,
             context_length=context_length,
-            max_messages=ollama_mgr.compute_max_messages(),
+            max_messages=llm_mgr.compute_max_messages(),
         )
 
         # 7. Done event
@@ -2019,7 +2019,7 @@ async def _agent_loop(
 # ---------------------------------------------------------------------------
 
 async def chat_response_generator(
-    session: ChatSession, user_message: str, ollama_mgr
+    session: ChatSession, user_message: str, llm_mgr
 ) -> AsyncGenerator[str, None]:
     """Yield SSE-formatted events. Routes to agent loop or streaming path."""
     # Session boundary: a conversation's FIRST turn shares no history with
@@ -2030,9 +2030,9 @@ async def chat_response_generator(
     if not session.messages:
         llm_backend.begin_cold_session()
     # Global mode always uses the agent loop (tools are essential)
-    if session.mode == "wiki" or await ollama_mgr.supports_tools():
-        async for event in _agent_loop(session, user_message, ollama_mgr):
+    if session.mode == "wiki" or await llm_mgr.supports_tools():
+        async for event in _agent_loop(session, user_message, llm_mgr):
             yield event
     else:
-        async for event in _chat_response_generator_streaming(session, user_message, ollama_mgr):
+        async for event in _chat_response_generator_streaming(session, user_message, llm_mgr):
             yield event

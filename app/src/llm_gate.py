@@ -21,7 +21,7 @@ which cannot express "let the 0.3s embed past the 169s consolidation" - see the
 _PRIORITY table below for the measured service times that motivated the change.
 
 Interactive chat and edit-assist run in the separate web process via
-``OllamaManager`` and are NOT gated here. Note that this does NOT make them
+``NativeLLMManager`` and are NOT gated here. Note that this does NOT make them
 responsive, which the previous version of this docstring claimed: skipping the
 gate does not create capacity at the LLM server, which is itself serial. Measured
 2026-08-02, a chat request arriving mid-consolidation waits out a 169s call. The
@@ -49,7 +49,7 @@ import asyncio
 import heapq
 import time
 
-from config import OLLAMA_MAX_CONCURRENCY
+from config import LLM_MAX_CONCURRENCY
 
 # Service order when the gate is contended: LOWEST number goes first.
 #
@@ -111,8 +111,8 @@ _max_wait_ms: dict[str, int] = {}
 
 # Priority dispatcher, replacing asyncio.Semaphore (which is strictly FIFO and
 # offers no way to let a 0.3s embed past a 169s consolidation). Same invariant:
-# never more than OLLAMA_MAX_CONCURRENCY holders at once.
-_free = OLLAMA_MAX_CONCURRENCY    # permits not currently held
+# never more than LLM_MAX_CONCURRENCY holders at once.
+_free = LLM_MAX_CONCURRENCY    # permits not currently held
 _waiters: list = []               # heap of (priority, seq, future)
 _seq = 0
 
@@ -206,7 +206,7 @@ class _GateHandle:
 
         # The semaphore is HELD from here on, but __aexit__ only runs if we
         # return normally. So anything that escapes this window leaks the gate
-        # permanently - and at OLLAMA_MAX_CONCURRENCY=1 that wedges every piece
+        # permanently - and at LLM_MAX_CONCURRENCY=1 that wedges every piece
         # of background LLM work until the worker restarts.
         #   * Exception  -> swallowed. Instrumentation must never break the
         #                   thing it measures, even if _report itself is buggy.
@@ -420,7 +420,7 @@ async def mark_human_active(ttl_s: int | None = None) -> None:
     """Record that a person is using the wiki right now. Best-effort, never raises.
 
     Written by the WEB process on page views and chat turns; read by the WORKER
-    so agents can stand aside. This replaces `OllamaManager.touch()`, which set an
+    so agents can stand aside. This replaces `NativeLLMManager.touch()`, which set an
     in-process timestamp that nothing ever read and that the worker could not see
     anyway - the signal existed but never crossed the process boundary.
 

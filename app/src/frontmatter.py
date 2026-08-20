@@ -6,7 +6,7 @@
 import re
 
 
-def parse_ollama_tags(raw_response: str) -> list[str]:
+def parse_llm_tags(raw_response: str) -> list[str]:
     """Clean LLM output into a list of tags. Handle common quirks
     (numbering, bullets, markdown formatting, extra text).
     Strip to lowercase alphanumeric + hyphens. Cap at 8 tags."""

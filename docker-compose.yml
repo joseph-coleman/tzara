@@ -44,7 +44,7 @@
     # agent-API port bind and crash-loop. One process, three async task slots.
     "command": "taskiq worker src.task_definitions:broker --max-async-tasks 3 --workers 1",
     # Same runtime config as the server (see note above): the worker reads the
-    # same .env vars (OLLAMA_*, POSTGRES_*, HISTORY_LOCATION, agent settings).
+    # same .env vars (LLM_*, POSTGRES_*, HISTORY_LOCATION, agent settings).
     "env_file": [{ "path": ".env", "required": false }],
     "volumes": [
       "${VAULTS_LOCATION:-./app/vaults}:/app/app/vaults",
@@ -222,7 +222,10 @@
     # The whole shell script is the THIRD element of the entrypoint list so
     # Compose passes it to `sh -c` as one argument. (A string `command` gets
     # word-split into argv, which would hand `sh -c` only the first token.)
-    "entrypoint": ["/bin/sh", "-c", "until ollama list >/dev/null 2>&1; do echo 'waiting for ollama...'; sleep 2; done; ollama pull ${OLLAMA_MODEL:-llama3.2:3b}; ollama pull ${OLLAMA_EMBED_MODEL:-embeddinggemma:300m}; echo 'model bootstrap complete'"],
+    # Model names nest the pre-rename OLLAMA_* fallbacks: Compose does its own
+    # substitution and never sees config.py's _llm_env, so an .env from an
+    # earlier release must still bootstrap the models the app will actually ask for.
+    "entrypoint": ["/bin/sh", "-c", "until ollama list >/dev/null 2>&1; do echo 'waiting for ollama...'; sleep 2; done; ollama pull ${LLM_MODEL:-${OLLAMA_MODEL:-llama3.2:3b}}; ollama pull ${LLM_EMBED_MODEL:-${OLLAMA_EMBED_MODEL:-embeddinggemma:300m}}; echo 'model bootstrap complete'"],
     "restart": "no"
   },
 

@@ -153,6 +153,73 @@ async def consume_new(r, *, stream_key: str = STREAM_KEY,
     return len(entries)
 
 
+async def repool_trigger_events(r, slug: str, events: list[dict] | None, *,
+                                pool_key: str = POOL_KEY) -> int:
+    """Put a turned-away run's trigger events BACK in the pool. Returns the count.
+
+    Guard 7 keeps the planner from firing into a held lock, but the lock can still
+    be taken between the tick and the task actually running. This closes that race,
+    and it is the event-side analogue of a rule the SCHEDULER already follows:
+    agent_scheduler only stamps last-run when a run acquires the lock, "so an
+    occurrence that is enqueued but later deferred stays due and retries instead of
+    silently advancing the schedule". Delivery here advances at ENQUEUE, so without
+    this an event-triggered run turned away at the lock is lost outright - which is
+    why "deferred" meant retry for a scheduled agent and dropped for this one.
+
+    Best-effort, never raises: failing to re-pool costs one trigger, the behavior
+    this replaces.
+
+    Exact with MULTIPLE subscribers, which is the whole difficulty. The planner
+    fires every eligible subscriber in the SAME tick - the lock serializes execution,
+    not delivery - so a loser must restore the entry without un-delivering the winner.
+    Two paths:
+
+      entry survives  a peer is still undelivered; drop just this slug. Exact.
+      entry is GONE   reachable ONLY when every subscriber was delivered (that is
+                      literally the delete condition, `matching <= total`), so the
+                      others were all served and `matching - {slug}` is exactly the
+                      set to restore. If a peer is later turned away too, its own
+                      re-pool takes the survives-path and removes itself.
+
+    Without `matching` (an envelope enqueued before this shipped) a missing entry is
+    LEFT missing: losing one trigger is the behavior this replaces, whereas guessing
+    would re-run a peer that already succeeded. Degrade backwards, never sideways.
+    """
+    if not events:
+        return 0
+    n = 0
+    for ev in events:
+        eid = ev.get("id")
+        if not eid:
+            continue
+        try:
+            raw = await r.hget(pool_key, eid)
+            if raw:                     # still pooled: just un-deliver this slug
+                entry = json.loads(raw)
+                entry["delivered"] = sorted(
+                    set(entry.get("delivered") or []) - {slug})
+            else:                       # deleted as fully served - put it back
+                peers = ev.get("matching")
+                if not peers:
+                    logger.warning(
+                        "events: %s carries no subscriber list; leaving it unpooled "
+                        "for %s rather than risk re-running a peer", eid, slug)
+                    continue
+                entry = {k: v for k, v in ev.items()
+                         if k not in ("delivered", "matching")}
+                entry["delivered"] = sorted(set(peers) - {slug})
+                entry["pooled_at"] = datetime.datetime.now().isoformat(
+                    timespec="seconds")
+            await r.hset(pool_key, eid, json.dumps(entry, ensure_ascii=False))
+            n += 1
+        except Exception:               # noqa: BLE001 - see docstring
+            logger.exception("events: could not re-pool %s for %s", eid, slug)
+    if n:
+        logger.info("events: re-pooled %d event(s) for %s (turned away at the "
+                    "global run lock); next tick will fire it again", n, slug)
+    return n
+
+
 def _stream_id_key(eid: str) -> tuple[int, int]:
     """Numeric sort key for a Redis stream id ('ms-seq') - lexicographic
     comparison mis-orders seq 9 vs 10 within one millisecond."""
@@ -190,15 +257,66 @@ async def read_recent(r, count: int = 20, *,
 
 def format_trigger_note(events: list[dict]) -> str:
     """Human-readable trigger batch, appended to the agent's kickoff message
-    and reused by the run log's 'Triggered by' section (gap-#7 style: lossy,
-    prompt-interpreted context - the framework stays stateless)."""
+    (gap-#7 style: lossy, prompt-interpreted context - the framework stays
+    stateless).
+
+    An `agent.*` event also reports the peer's OUTPUT PAGE. Knowing only who fired
+    is not actionable on its own: the owned area is hidden from an unqualified
+    `list_documents`, so without this line a directive has to hard-code the peer's
+    path - which silently rots when the page moves.
+
+    The `agent.completed` PAYLOAD is the authority, not the registry: `output` is
+    what that run actually wrote, and it is null when the run wrote nothing (an
+    empty/max-steps run under `log:` preserves the previous report instead of
+    overwriting it). Saying so is the load-bearing half. A registry-derived path
+    would always resolve - `output:` frontmatter defaults to "Output.md", so every
+    agent HAS a path whether or not a page exists - and pointing a triggered agent
+    at a stale report is worse than pointing at nothing: it reads last run's work
+    as if it were fresh and redoes it.
+    """
     lines = [f"You were triggered by {len(events)} event(s):"]
     for ev in events:
         lines.append(
             f"- {ev.get('type', '?')}: '{ev.get('subject', '')}' "
             f"(vault {ev.get('vault', '?')}, by {ev.get('actor', '?')}, "
             f"{ev.get('ts', '?')})")
+        detail = _output_clause(ev)
+        if detail:
+            lines.append(f"  {detail}")
     return "\n".join(lines)
+
+
+def _page_exists(vault: str, rel: str) -> bool:
+    """Existence check through WikiDoc's traversal-checked path resolver."""
+    import os
+
+    from src.wikidoc import WikiDoc
+    try:
+        return os.path.isfile(WikiDoc._abs_checked(vault, rel))
+    except Exception:       # noqa: BLE001 - a note must never fail a run
+        return False
+
+
+def _output_clause(ev: dict) -> str:
+    """The 'its output page' line for one envelope, or "" when there is nothing
+    trustworthy to say. See format_trigger_note for why the payload outranks the
+    registry."""
+    subject = str(ev.get("subject", "")).strip()
+    if not subject or not str(ev.get("type", "")).startswith("agent."):
+        return ""
+    payload = ev.get("payload") or {}
+    if "output" in payload:                    # agent.completed - authoritative
+        out = payload["output"]
+        return (f"its output page: `{out}`" if out else
+                "that run wrote NO output page - do NOT read its previous report "
+                "as if it were this run's work")
+    # agent.failed / agent.cancelled, or an envelope pooled before `output` was
+    # carried: fall back to the registry, but only name a page that EXISTS.
+    from src import agent_registry     # lazy: import cycle (see fire/reconcile)
+    rel = agent_registry.agent_output_rel(subject)
+    if rel and _page_exists(str(ev.get("vault", "")), rel):
+        return f"its last known output page: `{rel}` (not necessarily from this run)"
+    return ""
 
 
 # Event type -> readable phrase. The subject that follows differs by type
@@ -313,10 +431,16 @@ def reconcile_subscriptions(agents_meta: list[dict], cached: dict):
 # Dispatch (called from the worker scheduler tick)
 # ---------------------------------------------------------------------------
 
-async def _fire_event_run(r, fire: Fire) -> bool:
+async def _fire_event_run(r, fire: Fire,
+                          matching: dict | None = None) -> bool:
     """Enqueue one event-triggered run. Mirrors agent_scheduler._fire - same
     job-id + dedup + PENDING pre-seed contract - but vault-scoped and with the
-    trigger batch attached."""
+    trigger batch attached.
+
+    ``matching`` (event id -> every subscribing slug) rides along on each envelope
+    so a run turned away at the global lock can restore the pool entry without
+    un-delivering its PEERS. See repool_trigger_events.
+    """
     from src import agent_registry
     from src.task_definitions import run_agent_task    # lazy: import cycle
     from src.task_tracker import IN_PROGRESS_KEY, PENDING_KEY, preseed_pending
@@ -330,9 +454,18 @@ async def _fire_event_run(r, fire: Fire) -> bool:
             return False
         await preseed_pending(r, job_id, "run_agent_task")
         preseeded = True
-        # Strip pool bookkeeping from the envelopes handed to the run.
-        clean = [{k: v for k, v in ev.items() if k not in ("delivered", "pooled_at")}
-                 for ev in fire.events]
+        # Strip pool bookkeeping from the envelopes handed to the run, but attach
+        # the subscriber list: repool_trigger_events needs to know who ELSE was
+        # served in order to put the entry back without un-delivering them. The
+        # pre-tick `delivered` is NOT enough - by the time a peer is turned away,
+        # every subscriber has been marked, which is exactly why the entry is gone.
+        # Renderers read named keys (type/subject/vault/actor/depth/ts), so the extra
+        # one is inert.
+        clean = []
+        for ev in fire.events:
+            c = {k: v for k, v in ev.items() if k not in ("delivered", "pooled_at")}
+            c["matching"] = sorted((matching or {}).get(ev.get("id"), []))
+            clean.append(c)
         task = await run_agent_task.kicker().with_task_id(job_id).kiq(
             agent_slug=fire.slug, vault_id=fire.vault_id,
             trigger_events=clean, event_depth=fire.depth,
@@ -444,9 +577,15 @@ async def dispatch_tick(now: datetime.datetime, agents: list | None = None) -> N
                    if await r.exists(cooldown_key(slug))}
         budget_used = {slug: int(await r.get(budget_key(slug)) or 0)
                        for slug, _t, _v in subs}
+        # Guard 7 (global). `active` above is PER-AGENT - it answers "is this slug
+        # running?", never "is anything running?". The second is what run_agent_task
+        # enforces, so without reading it here the planner fires into a held lock and
+        # the run is dropped. Lazy import: task_definitions imports this module.
+        from src.task_definitions import AGENT_RUN_LOCK_KEY
+        run_lock_held = bool(await r.exists(AGENT_RUN_LOCK_KEY))
 
         plan = plan_dispatch(subs, pool, now, active, cooling, budget_used,
-                             unavailable=unavailable,
+                             unavailable=unavailable, run_lock_held=run_lock_held,
                              max_depth=EVENT_MAX_DEPTH,
                              budget_per_hour=EVENT_BUDGET_PER_HOUR,
                              max_age_s=EVENT_MAX_AGE_S)
@@ -458,7 +597,7 @@ async def dispatch_tick(now: datetime.datetime, agents: list | None = None) -> N
         delivered_updates: dict[str, set] = {}
         fired_slugs: set = set()
         for fire in plan.fires:
-            if not await _fire_event_run(r, fire):
+            if not await _fire_event_run(r, fire, plan.matching):
                 continue
             if fire.slug not in fired_slugs:
                 fired_slugs.add(fire.slug)

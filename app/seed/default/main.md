@@ -1,6 +1,6 @@
 # Welcome to Tzara
 
-This is your **main** vault's start page. Everything here is an ordinary markdown file on disk - edit it, delete it, or replace it entirely. 
+This is your **{{vault}}** vault's start page. Everything here is an ordinary markdown file on disk - edit it, delete it, or replace it entirely. 
 
 ## Getting started
 

@@ -338,6 +338,55 @@ async def read_gate_stats() -> dict:
 # Kept in this module because it is the same KIND of measurement (who waits on a
 # shared serial resource), and the web layer renders both tables together.
 
+# Observed PREFILL throughput (prompt tokens ingested per second), so a reserved
+# turn can size its transcript from what this machine actually does instead of a
+# hand-tuned constant. Prefill speed is hardware, not policy: ~250 tok/s measured on
+# a Strix Halo box, several times that on faster silicon, and the same fixed budget
+# is either wasteful or over-long depending which one you are on.
+#
+# An EMA, not a cumulative counter: after a hardware or model change the old rate
+# must wash out in a few calls, and a lifetime average would hold it for weeks.
+PREFILL_KEY = "llm:prefill:rate"
+PREFILL_EMA_ALPHA = 0.3
+
+
+async def record_prefill_rate(prompt_tokens: int, elapsed_s: float) -> None:
+    """Fold one observation into the prefill-rate EMA. Best-effort, never raises.
+
+    Only SIZEABLE calls are informative: a tiny prompt is dominated by connection
+    and queueing overhead and would drag the estimate down.
+    """
+    if prompt_tokens < 2000 or elapsed_s <= 0:
+        return
+    rate = prompt_tokens / elapsed_s
+    try:
+        from src.task_broker import get_async_redis
+        r = get_async_redis()
+        try:
+            prev = await r.get(PREFILL_KEY)
+            blended = (rate if prev is None else
+                       PREFILL_EMA_ALPHA * rate
+                       + (1 - PREFILL_EMA_ALPHA) * float(prev))
+            await r.set(PREFILL_KEY, f"{blended:.3f}")
+        finally:
+            await r.close()
+    except Exception:       # noqa: BLE001 - a stats write must never fail a run
+        pass
+
+
+async def read_prefill_rate() -> float:
+    """Observed prompt tokens/second, or 0.0 when nothing has been measured yet."""
+    try:
+        from src.task_broker import get_async_redis
+        r = get_async_redis()
+        try:
+            return float(await r.get(PREFILL_KEY) or 0.0)
+        finally:
+            await r.close()
+    except Exception:       # noqa: BLE001
+        return 0.0
+
+
 RUNLOCK_KEY = "llm:runlock:stats"
 
 

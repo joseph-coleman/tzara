@@ -58,6 +58,10 @@ from config import (
     AGENT_YIELD_POLL_S,
     AGENT_YIELD_TO_HUMAN,
     AGENT_MEMORY_TURN_TIMEOUT_S,
+    AGENT_LOGS_SUBDIR,
+    AGENT_NO_OP_MARKER,
+    AGENT_REPORT_MIN_CHARS,
+    AGENT_REPORT_TURN_TIMEOUT_S,
     AGENT_OUTPUT_DIR,
     AGENT_RUN_TIMEOUT_S,
     AGENT_TOOL_THINK,
@@ -65,10 +69,17 @@ from config import (
     LLM_KEEP_ALIVE,
     LLM_MODEL,
     LLM_NUM_CTX,
+    LLM_PREFILL_TIMEOUT_SHARE,
+    LLM_SUMMARY_INPUT_FRACTION,
     LLM_URL,
 )
 from src.agent_capabilities import uses_ledgers
-from src.agent_runner import MAX_AGENT_ITERATIONS, AgentRunResult, run_agent_loop
+from src.agent_runner import (
+    MAX_AGENT_ITERATIONS,
+    MAX_STEPS_SENTINEL,
+    AgentRunResult,
+    run_agent_loop,
+)
 from src.context_providers import (
     ContextProvider,
     DirectiveProvider,
@@ -337,6 +348,42 @@ def _collapsed_against_previous(vault_id: str, output_rel: str,
             and len(body) < len(previous) * AGENT_OUTPUT_COLLAPSE_RATIO):
         return len(previous)
     return None
+
+
+# Shared closing instruction: the agent side of the no-op contract (see
+# AGENT_NO_OP_MARKER). Injected for EVERY agent from the same constant the guard
+# tests, so the rule an agent is told and the rule it is judged by cannot drift.
+NO_OP_INSTRUCTION = (
+    "## Reporting a run with nothing to do\n"
+    f"If this run found nothing that needed doing, make the FIRST line of your "
+    f"final message exactly `{AGENT_NO_OP_MARKER}`, then one sentence saying what "
+    f"you checked and why no change was needed. Say it plainly - a short honest "
+    f"'nothing to do' is a complete, successful run, not a failure to report.\n"
+)
+
+
+def is_no_op(body: str) -> bool:
+    """True when the agent DECLARED this run a deliberate no-op.
+
+    PURE - unit-tested in .test/test_output_collapse_guard.py. The collapse guard
+    exempts these: a no-op report is short by nature, so length alone reads it as a
+    collapse. Only the agent can tell "I checked and nothing was needed" from "I
+    answered the wrong prompt" - the framework sees the same short body either way -
+    so the marker is a contract, not a heuristic.
+    """
+    return body.lstrip().upper().startswith(AGENT_NO_OP_MARKER.upper())
+
+
+def is_empty_run(body: str) -> bool:
+    """True when `body` is a non-answer: no final message, or the loop's max-steps
+    sentinel.
+
+    PURE - unit-tested in .test/test_output_collapse_guard.py. The collapse guard
+    MUST consult this FIRST: the sentinel is a short non-answer by construction, so
+    measuring it against the previous report always trips the guard and reports step
+    exhaustion as suspected output collapse.
+    """
+    return not body or body == MAX_STEPS_SENTINEL
 
 
 async def write_agent_memory(vault_id: str, agent_slug: str, text: str) -> str:
@@ -709,6 +756,95 @@ async def _record_ledgers_from_run(agent: BackgroundAgent, vault_id: str,
     return await apply_ledger_ops(vault_id, agent.owner, ops)
 
 
+async def summary_input_ctx(llm_mgr, timeout_s: float) -> int:
+    """Token budget a reserved turn may hand the summarizer, or 0 if unknown.
+
+    What actually bounds these turns is the CLOCK, not the context window: a lone
+    request ingested 76032 tokens fine on the reference box but logged ttft=301.9s
+    against a 300s budget. Prefill speed is hardware, so the budget is DERIVED from
+    a measured rate rather than configured - the same constant would be wasteful on
+    fast silicon and over-long on slow.
+
+    Falls back to LLM_SUMMARY_INPUT_FRACTION until a rate exists (first run on a
+    new install). That fraction is a BOOTSTRAP default, not a tuning knob - once
+    calls have been observed it stops being consulted.
+
+    Always capped by the reported window: no measured rate makes a prompt legal
+    that the model cannot hold.
+    """
+    from src.llm_gate import read_prefill_rate
+    try:
+        ctx = int(await llm_mgr.get_context_length() or 0)
+    except Exception:       # noqa: BLE001 - unknown context is not fatal
+        return 0
+    if not ctx:
+        return 0
+    rate = await read_prefill_rate()
+    if rate <= 0:
+        return int(ctx * LLM_SUMMARY_INPUT_FRACTION)
+    affordable = int(rate * timeout_s * LLM_PREFILL_TIMEOUT_SHARE)
+    return max(1, min(affordable, ctx))
+
+
+async def _generate_run_report(agent: BackgroundAgent, vault_id: str,
+                               messages: list[dict], llm_mgr) -> str:
+    """The reserved REPORT turn: one tool-free LLM call that writes the report a
+    step-exhausted run never got to.
+
+    Same shape as _consolidate_agent_memory and for the same reason: the loop can end
+    mid-task, and the work it DID do should not be thrown away. Without this the
+    agent's whole product is lost - and an agent triggered by its completion is fired
+    with an empty `output`, so the failure propagates downstream.
+
+    Returns "" on any failure (logged), never raising: the caller falls back to the
+    behavior this replaces, so a broken report turn costs a call and changes nothing.
+    """
+    from src.compaction import (
+        apply_sliding_window, estimate_tokens, summarize_conversation)
+    from src.llm_gate import get_llm_gate, record_prefill_rate
+    from src.memory_prompts import run_report_instruction
+
+    instruction = run_report_instruction(agent.name)
+    # Bound the INPUT before spending the call - a step-exhausted run has the
+    # LONGEST possible transcript by construction, so this is the case most likely
+    # to overflow the summarizer and return nothing for a long call.
+    bounded = messages
+    try:
+        ctx = await summary_input_ctx(llm_mgr, AGENT_REPORT_TURN_TIMEOUT_S)
+        if ctx:
+            instr_tokens = estimate_tokens([{"role": "user", "content": instruction}])
+            bounded, trimmed = apply_sliding_window(
+                messages, max_messages=len(messages),
+                system_prompt_tokens=instr_tokens, context_length=ctx,
+            )
+            if trimmed:
+                logger.info("report turn: trimmed transcript for %s:%s to fit %d ctx",
+                            agent.name, vault_id, ctx)
+    except Exception as e:       # noqa: BLE001 - bounding is best-effort
+        logger.debug("report turn: could not bound transcript (%s); sending as-is", e)
+
+    _inject_chars, gen_tokens = await memory_budget(llm_mgr)
+    sent = estimate_tokens(bounded)
+    t0 = time.monotonic()
+    try:
+        # Labeled separately from the agent's own turns AND from "agent:memory":
+        # three distinct kinds of LLM spend, each worth seeing on its own.
+        async with get_llm_gate("agent:report"):
+            text = await asyncio.wait_for(
+                summarize_conversation(bounded, instruction, llm_mgr,
+                                       max_tokens=gen_tokens),
+                timeout=AGENT_REPORT_TURN_TIMEOUT_S,
+            )
+    except Exception:           # noqa: BLE001 - see docstring
+        logger.exception("report turn failed for %s:%s", agent.name, vault_id)
+        return ""
+    # Feed the observation back: this is how the budget self-calibrates instead
+    # of being tuned per machine. Only a COMPLETED call is a valid sample - a
+    # timeout tells us the prompt was too big, not how fast the box is.
+    await record_prefill_rate(sent, time.monotonic() - t0)
+    return (text or "").strip()
+
+
 async def _consolidate_agent_memory(agent: BackgroundAgent, vault_id: str,
                                     messages: list[dict], prior_memory_text: str,
                                     llm_mgr) -> None:
@@ -736,7 +872,7 @@ async def _consolidate_agent_memory(agent: BackgroundAgent, vault_id: str,
     # overflowing; atomic groups keep tool results with their calls.
     bounded = messages
     try:
-        ctx = await llm_mgr.get_context_length()
+        ctx = await summary_input_ctx(llm_mgr, AGENT_MEMORY_TURN_TIMEOUT_S)
         if ctx:
             instr_tokens = estimate_tokens([{"role": "user", "content": instruction}])
             bounded, trimmed = apply_sliding_window(
@@ -811,6 +947,7 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
     providers: list[ContextProvider] = [
         DirectiveProvider(agent.directive, name="directive", priority=10),
         DirectiveProvider(agent.tools_text, name="tools", priority=30),
+        DirectiveProvider(NO_OP_INSTRUCTION, name="no_op", priority=35),
     ]
     # Cross-run memory (opt-in `memory:`): the agent's self-curated handoff note,
     # written by the reserved memory turn at end-of-run (below) and injected here
@@ -967,11 +1104,45 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
     body = (run_result.final_text or "").strip()
     output_path = None
 
+    # Computed HERE, above the collapse guard, because the guard must not judge a
+    # run that produced no real final message (see is_empty_run).
+    empty_run = is_empty_run(body)
+
+    # Reserved REPORT turn (+1 call, like the memory turn below). A run that did
+    # real work and then ran out of steps still owes a report - and an agent
+    # triggered by its completion reads that report, so losing it breaks the next
+    # agent too. Gated on activity: a run that called nothing has nothing to
+    # summarize, and buying an LLM call to say so is worse than the stub below.
+    report_turn_used = False
+    if error is None and empty_run and run_result.activity_log:
+        report = await _generate_run_report(agent, vault_id, messages, llm_mgr)
+        if len(report) >= AGENT_REPORT_MIN_CHARS:
+            body, report_turn_used = report, True
+            # Re-derived, not assumed: the reserved report is now this run's final
+            # text, so everything downstream must treat it as one.
+            empty_run = is_empty_run(body)
+            logger.info("reserved report turn wrote %d chars for %s:%s "
+                        "(loop ended with no final message)",
+                        len(body), agent.name, vault_id)
+        elif report:
+            # A stub, not a report. Treated as a failed turn so the last good
+            # report survives - the same outcome as generating nothing.
+            logger.warning(
+                "reserved report turn produced only %d chars for %s:%s (min %d) - "
+                "discarding it and preserving the previous report",
+                len(report), agent.name, vault_id, AGENT_REPORT_MIN_CHARS)
+
     # Output-collapse guard. Runs BEFORE the write block so a suspect run takes
     # the failure path whole: the page is preserved, the reserved memory and
     # ledger turns below never fire, and the run surfaces as a failure instead of
     # being found tomorrow as the agent's report.
-    if error is None and body:
+    # `report_turn_used` exempt: the guard measures a body against the agent's OWN
+    # previous page, and a framework-written summary has no such baseline (801 vs
+    # 2010 chars from one transcript). It is also the least contaminable call in
+    # the system - tool-free, its own instruction, prompt caching off in the worker
+    # - and rejecting it restores the empty output that broke downstream agents.
+    # AGENT_REPORT_MIN_CHARS above is what guards this path instead.
+    if error is None and not empty_run and not is_no_op(body) and not report_turn_used:
         previous_len = _collapsed_against_previous(vault_id, agent.output_rel, body)
         if previous_len is not None:
             logger.warning(
@@ -995,7 +1166,6 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
         # good report; when it is OFF there is no log page, so the output stub is the
         # sole channel that surfaces the miss. (This use of `log:` is observability,
         # not the memory-durability coupling that was removed.)
-        empty_run = not body or body == "(Reached maximum steps.)"
         if empty_run:
             if agent.log:
                 body = ""       # log page records the miss; preserve last report
@@ -1054,7 +1224,7 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
                              output_path, error, run_id, n_staged, n_applied,
                              trigger_events, trigger_source,
                              (ledger_during, ledger_reserved) if show_ledgers else None,
-                             ledger_injection_note)
+                             ledger_injection_note, report_turn_used)
     if error is not None:
         raise error
 
@@ -1079,7 +1249,8 @@ async def _write_run_log(agent: BackgroundAgent, vault_id: str, llm_mgr,
                          trigger_events: list[dict] | None = None,
                          trigger_source: str = "manual",
                          ledger_activity: tuple[list[str], list[str]] | None = None,
-                         ledger_injection: str = "") -> None:
+                         ledger_injection: str = "",
+                         report_turn_used: bool = False) -> None:
     """Per-run log page (crude store-full rendering; view-layer collapsing is a
     later refinement). Log failures must never mask the run's own outcome."""
     from src.events import format_trigger_summary   # lazy: import cycle
@@ -1100,6 +1271,11 @@ async def _write_run_log(agent: BackgroundAgent, vault_id: str, llm_mgr,
         f"| duration | {duration:.1f}s |",
         f"| tool calls | {len(run_result.activity_log)} |",
         f"| reached_max_steps | {run_result.reached_max_steps} |",
+        # The report exists, but the LOOP did not finish. Without saying so a
+        # starved run reads as a healthy one, which is how expanse-worldbuilder
+        # went five runs deep before anyone noticed.
+        *(['| report | reserved turn - the loop ended with no final message |']
+          if report_turn_used else []),
         f"| output | {output_path or '-'} |",
         f"| mode | {agent.mode} |",
         f"| staged for review | {n_staged} |",
@@ -1136,7 +1312,7 @@ async def _write_run_log(agent: BackgroundAgent, vault_id: str, llm_mgr,
     elif run_result.final_text:
         lines += ["", "## Final output", "", run_result.final_text]
     try:
-        await write_agent_output(vault_id, agent.owner, f"logs/{ts}.md",
+        await write_agent_output(vault_id, agent.owner, f"{AGENT_LOGS_SUBDIR}/{ts}.md",
                                  "\n".join(lines), title=f"Run {ts}")
     except Exception:
         logger.exception("failed to write run log for %s:%s", agent.name, vault_id)

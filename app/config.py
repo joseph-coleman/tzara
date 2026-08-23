@@ -300,7 +300,21 @@ EMBED_INCLUDE_MAX_DEPTH = int(os.environ.get("EMBED_INCLUDE_MAX_DEPTH", "3"))
 #
 # Token estimation and compaction tuning
 #
-CHARS_PER_TOKEN = 3.5       # empirical chars-per-token ratio for budget math
+# Empirical chars-per-token ratio for budget math. Verified against the live
+# tokenizer 2026-08-22 (POST /api/v1/tokenize) - keep 3.5 unless you re-measure.
+#
+# Per content type it looks badly wrong: prose 4.63-4.66, directives 4.35, run
+# logs 2.60, search rows 3.23, list_documents JSON 1.92 - a 143% spread, and the
+# SIGN of the error flips between the ends. It is nonetheless right for the thing
+# it is used on. Budgets are computed over whole TRANSCRIPTS, which mix prose-
+# heavy read_document results with a little dense JSON, and on a real tool-heavy
+# transcript 3.5 lands within +5% of the tokenizer.
+#
+# Splitting it by message role was TRIED and was worse (+83.7%): most tool results
+# are read_document output, i.e. markdown prose, so `role == 'tool'` does not mean
+# structured. A punctuation-density model fits only R^2=0.78 - not enough to beat
+# one well-placed constant. Do not "fix" this from a single-sample measurement.
+CHARS_PER_TOKEN = 3.5
 MIN_MESSAGES = 4            # absolute floor for conversation history after compaction
 
 _embed_logger = logging.getLogger("embedding")
@@ -585,6 +599,10 @@ EXCLUDED_FOLDERS.add(AGENT_OUTPUT_DIR)
 # frontmatter. Distinct from the output page (human-facing report) and the per-run
 # log pages.
 AGENT_MEMORY_FILE = os.environ.get("AGENT_MEMORY_FILE", "memory.md")
+# Per-run log pages live one level deeper, under _dada/{owner}/{AGENT_LOGS_SUBDIR}/.
+# They outnumber every other page in the owned area by two orders of magnitude, so
+# enumeration treats the folder as opt-in the same way the owned area itself is.
+AGENT_LOGS_SUBDIR = "logs"
 # Memory budget. ONE number governs both how much memory text is injected into the
 # system prompt AND how much the memory turn may generate - see
 # background_agents.memory_budget(), which derives them together.
@@ -662,9 +680,63 @@ AGENT_OUTPUT_COLLAPSE_RATIO = float(
     os.environ.get("AGENT_OUTPUT_COLLAPSE_RATIO", "0.25"))
 AGENT_OUTPUT_COLLAPSE_FLOOR = int(
     os.environ.get("AGENT_OUTPUT_COLLAPSE_FLOOR", "800"))
+# The one thing length cannot decide: a run that legitimately had NOTHING to do.
+# Its report is inherently short (~200 chars), so the guard reads it as a collapse
+# - and only the agent knows the difference, which makes it a declared contract
+# rather than a better threshold. Every agent is told to lead with this marker;
+# the guard exempts a body that does. Output generated under a FOREIGN system
+# prompt (the case the guard exists for) never saw the convention, so it cannot
+# carry the marker. Applies only to a CLEAN finish: a max-steps run never writes
+# its own final message at all (see is_empty_run) and is exempt before this.
+AGENT_NO_OP_MARKER = os.environ.get("AGENT_NO_OP_MARKER", "NO CHANGES")
 
 # Wall-clock bound on the single reserved memory-turn LLM call (the +1 iteration).
 AGENT_MEMORY_TURN_TIMEOUT_S = float(os.environ.get("AGENT_MEMORY_TURN_TIMEOUT_S", "300"))
+# The reserved REPORT turn, same shape as the memory turn: one tool-free call that
+# writes the output page from the transcript when the loop ended without a final
+# message. Without it a step-exhausted run loses its whole product - and any agent
+# triggered by its completion is fired with nothing to read. Defaults to the memory
+# turn's bound because it is the same kind of call on the same transcript.
+AGENT_REPORT_TURN_TIMEOUT_S = float(
+    os.environ.get("AGENT_REPORT_TURN_TIMEOUT_S", str(AGENT_MEMORY_TURN_TIMEOUT_S)))
+# Shortest reserved report worth REPLACING the previous one with. The collapse
+# guard does not judge reserved reports (it compares against the previous page,
+# and a framework-written summary has no such baseline - measured 801 vs 2010
+# chars from the SAME transcript), so this is the only thing standing between a
+# truncated stub and a good report. Below it the turn counts as having failed and
+# the last good report is preserved, exactly as when it returns nothing. Not
+# derivable; low enough to pass any real report, high enough to catch a stub.
+AGENT_REPORT_MIN_CHARS = int(os.environ.get("AGENT_REPORT_MIN_CHARS", "200"))
+
+# Share of the backend-REPORTED context window a reserved turn may fill with
+# transcript. A FRACTION, not a token count, so it survives a model swap - the
+# absolute would have to be re-derived every time and silently rots if it is not.
+#
+# The limit is TIME and CONCURRENCY, not per-request capacity. Diagnosed from the
+# server's own log stream 2026-08-22 (Lemonade ws://<host>:9000/logs/stream):
+#   srv load_model: n_slots = 4, n_ctx_slot = 131072, kv_unified = 'true'
+# Four slots share ONE KV cache, so simultaneous large prompts evict each other:
+#   decode: failed to find free space in the KV cache ... -> 500 "Context size
+#   has been exceeded" (the errors arrive in pairs, one per competing task id).
+# A LONE request is not capped anywhere near the window - one ingested 76032
+# tokens fine. What it cannot beat is the clock: prefill runs ~250 tok/s, so that
+# same call reported ttft=301.89s and the CLIENT timed out at 300s.
+#
+# 0.4 is therefore a TIME budget: ~52k estimated tokens here (~47k real - our
+# CHARS_PER_TOKEN estimate runs ~10% high) is roughly 190s of the 300s turn, and
+# a smaller prompt is also less likely to collide in the shared cache. It still
+# covers a real 30-tool-call transcript twice over (one measured at 25k / 73s).
+# apply_sliding_window reserves a further ctx//8 of whatever it is handed, so the
+# effective transcript budget is ~0.35 of reported - do not compensate for that
+# twice by lowering this as well.
+LLM_SUMMARY_INPUT_FRACTION = float(
+    os.environ.get("LLM_SUMMARY_INPUT_FRACTION", "0.4"))
+# Share of a reserved turn's timeout that may go to PREFILL, leaving the rest for
+# generation and jitter. Unlike the fraction above this is hardware-INDEPENDENT -
+# a margin, not a rate - so it does not need re-tuning when the LLM host changes.
+# The rate itself is measured (llm_gate.record_prefill_rate).
+LLM_PREFILL_TIMEOUT_SHARE = float(
+    os.environ.get("LLM_PREFILL_TIMEOUT_SHARE", "0.6"))
 # The memory step's SECOND call - a tool-only turn that records to ledgers. Its
 # own (shorter) bound: it emits a tool call, not prose, and its input is the note
 # plus a transcript tail rather than the whole session. Measured ~3.6s.

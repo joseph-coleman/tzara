@@ -4175,6 +4175,16 @@ _VAULTS_STATIC = """
         border-radius: var(--radius-sm); background-color: var(--bg-color);
         cursor: pointer; flex: none;
     }
+    /* Wrapping the box in its label makes the text a click target too. Overrides the
+       8em gutter above, which is for the settings panel's leading labels. */
+    .vault-field > label.vault-check {
+        display: flex; align-items: center; gap: var(--space-xs);
+        min-width: 0; flex: none; cursor: pointer; white-space: nowrap;
+        font-size: var(--text-smd);
+    }
+    /* The UA's default blue is the one control on this page that ignores the palette.
+       --link-color is the theme's interactive accent and flips with the scheme. */
+    .vault-check input[type="checkbox"] { accent-color: var(--link-color); }
     .vault-hint { font-size: var(--text-smd); opacity: 0.8; margin-left: var(--space-sm); }
     .vault-banner {
         padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm);
@@ -4378,15 +4388,24 @@ async def vaults_landing(request: Request):
             return await _vaults_update(form)
         slug = str(form.get("slug", "")).strip().lower()
         display_name = str(form.get("display_name", "")).strip() or slug
+        # An unchecked checkbox is simply ABSENT from the POST, so presence is the
+        # whole signal -- there is no "false" value to compare against.
+        seed = "seed" in form
         try:
-            vault_registry.create_vault(slug, display_name)
+            # Dir creation, git init, a seed copy and its commits -- off the loop.
+            await asyncio.to_thread(
+                vault_registry.create_vault, slug, display_name, seed)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        # A new vault has no pages yet, so send the user to the EDITOR in create
-        # mode (prefilled by starter_document) rather than to /wiki/, which would
-        # render a 404 whose "return to the main page" link leaves the new vault.
-        page = _default_page_url(slug)
-        return RedirectResponse(f"/edit/{slug}/{page}", status_code=302)
+        # Seeding gives the new vault a start page, so land on the RENDERED page. If
+        # the seed tree is absent (or its start page is named differently) the vault
+        # has no pages yet: send the user to the EDITOR in create mode instead, since
+        # /wiki/ would render a 404 whose "return to the main page" link leaves the
+        # new vault.
+        start = vault_registry.vault_default_page(slug)
+        verb = "wiki" if WikiDoc(start, vault=slug).exists() else "edit"
+        return RedirectResponse(
+            f"/{verb}/{slug}/{_default_page_url(slug)}", status_code=302)
 
     # Built as raw HTML rather than markdown: the settings panels are nested forms,
     # and python-markdown mangles substantial raw HTML blocks (the same reason
@@ -4404,13 +4423,28 @@ async def vaults_landing(request: Request):
     vaults = await asyncio.to_thread(vault_registry.list_vaults)
     panels = "".join(_vault_settings_panel(v, open_slug) for v in vaults)
 
+    # Two rows rather than one: the text inputs carry an 18em min-width each, so a
+    # fourth control on the same line squeezes the checkbox label to nothing.
+    # Checked by default -- a vault that opens on a real page beats one that opens on
+    # the editor. Unchecking is for importing an existing note collection, where a
+    # welcome page is just something to delete.
     create_form = (
         '<h2>Create a vault</h2>'
-        '<form class="vault-field" method="post" action="/vaults">'
+        '<form method="post" action="/vaults">'
         '<input type="hidden" name="action" value="create">'
+        '<div class="vault-field">'
         '<input type="text" name="slug" placeholder="slug (lowercase, a-z0-9-_)" required>'
         '<input type="text" name="display_name" placeholder="Display name">'
-        '<button type="submit">Create</button></form>'
+        '<button type="submit">Create</button>'
+        '</div>'
+        '<div class="vault-field">'
+        '<label class="vault-check">'
+        '<input type="checkbox" name="seed" value="1" checked> Add a starter page'
+        '</label>'
+        '<span class="vault-hint">A welcome page linking to the help docs. '
+        'Uncheck for a completely empty vault.</span>'
+        '</div>'
+        '</form>'
     )
 
     doc_template = jinja_env.get_template("document.html")

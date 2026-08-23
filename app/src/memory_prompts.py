@@ -66,6 +66,24 @@ Output ONLY the updated memory in exactly this format - no preamble, no explanat
 - ..."""
 
 
+RUN_REPORT_PROMPT = """You are the {agent_name} agent. Your work session just ended without you writing your closing report - you ran out of steps mid-task. Below is a TRANSCRIPT of the session. Write the report now, from what the transcript shows you actually did.
+
+Report ONLY what the transcript shows. Do not describe work you intended, planned, or were about to start as though it happened. If a change was attempted but the result shows it failed, say so.
+
+Be brief and concrete: what you changed, on which pages, and what is left unfinished. End with a "Next run" line naming the most valuable thing to pick up.
+
+This run hit its step limit, so say that in one line at the top - the person reading this needs to know the session was cut short, not that it finished cleanly.
+
+Output ONLY the report as Markdown - no preamble, no commentary, no code fences."""
+
+
+# System-owned tail for the report turn. Unlike _TAIL there is no prior note to
+# carry: the transcript is the whole input.
+_REPORT_TAIL = """
+
+TRANSCRIPT of the session just finished:"""
+
+
 EDITOR_MEMORY_PROMPT = """You are "{label}", an editor tool a person runs on passages while they write. You keep a single running note ("memory") that PERSISTS across invocations and across different documents - it is how you accumulate and organize what matters over many runs.
 
 Below is your CURRENT memory and a TRANSCRIPT of the session you just finished (the passage you were given and what you did with it). Produce your UPDATED memory.
@@ -97,6 +115,15 @@ def agent_instruction(memory_prompt: str, agent_name: str, tool_names: str,
     body = fill((memory_prompt or "").strip() or AGENT_MEMORY_PROMPT,
                 agent_name=agent_name, tool_names=tool_names)
     return body + fill(_TAIL, prior_memory=prior_memory or _NO_MEMORY)
+
+
+def run_report_instruction(agent_name: str) -> str:
+    """Assemble the reserved REPORT turn's instruction.
+
+    Deliberately NOT the agent's own `FINAL message = ...` wording: that describes a
+    run that finished, and reusing it invites a cut-short run to report as if it had.
+    """
+    return fill(RUN_REPORT_PROMPT, agent_name=agent_name) + _REPORT_TAIL
 
 
 def editor_instruction(memory_prompt: str, label: str, prior_memory: str) -> str:

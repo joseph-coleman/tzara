@@ -49,7 +49,11 @@ import re
 
 import psycopg2.extras
 
-from config import AGENT_LEDGER_MAX_ITEMS, AGENT_LEDGER_RECALL_ROWS
+from config import (
+    AGENT_LEDGER_MAX_ITEMS,
+    AGENT_LEDGER_RECALL_ROWS,
+    AGENT_OUTPUT_DIR,
+)
 from src.arg_coercion import arg_as_str, arg_as_int, arg_as_float, arg_as_list
 
 logger = logging.getLogger("agent_capabilities")
@@ -154,24 +158,105 @@ LIST_DOCS_DEFAULT_LIMIT = 500
 LIST_DOCS_MAX_LIMIT = 2000
 
 
+def _rows_to_listing(rows: list[dict], total: int, limit: int,
+                     note: str = "") -> str:
+    """Shared header + JSON body for both list_documents branches."""
+    header = f"list_documents: {len(rows)} of {total} matching page(s)"
+    if len(rows) == limit:      # a full page: more may remain - hand back the cursor
+        header += (f" - MORE MAY REMAIN; continue with after='{rows[-1]['doc_id']}', "
+                   f"or narrow with path_prefix/tag")
+    if note:
+        header += f" ({note})"
+    body = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
+    return header + ("\n" + body if body else "")
+
+
+def _list_owned_area(vault_id: str, prefix: str, tag: str,
+                     limit: int, after: str) -> str:
+    """Enumerate the agent-owned area from the FILESYSTEM.
+
+    The documents table cannot answer this: AGENT_OUTPUT_DIR is watcher-ignored,
+    so only pages whose agent sets `index_output: true` ever get a row. vault_index
+    is the canonical cached enumerator and sees the whole area, which is what makes
+    a peer agent's report discoverable rather than exact-path-only.
+
+    Per-run logs are opt-in within the area, the same way the area itself is opt-in:
+    they outnumber reports by two orders of magnitude, so including them by default
+    would bury the report an agent came looking for. Name the `logs/` folder in the
+    prefix to get them.
+
+    Three differences from the indexed branch, all stated in the header rather than
+    left silent - an enumeration that quietly answers a narrower question than it
+    was asked is the blind spot LIST_DOCS_DEFAULT_LIMIT's comment warns about:
+    `tag` cannot be honored (no document_tags rows), `title` is the filename stem
+    rather than frontmatter, and logs are omitted unless asked for.
+    """
+    from config import AGENT_LOGS_SUBDIR, vault_abs_root
+    from src import timefmt, vault_index
+
+    logs_seg = f"/{AGENT_LOGS_SUBDIR}/"
+    want_logs = logs_seg in f"/{prefix}" or prefix.endswith(f"/{AGENT_LOGS_SUBDIR}")
+    paths, _ = vault_index.get_index(vault_id)
+    matched = sorted(p for p in paths
+                     if p.lower().endswith(".md") and p.startswith(prefix))
+    n_all = len(matched)
+    if not want_logs:
+        matched = [p for p in matched if logs_seg not in f"/{p}"]
+    n_logs_hidden = n_all - len(matched)
+    total = len(matched)                       # total ignores the paging cursor
+    if after.strip():                          # keyset: resume strictly past `after`
+        matched = [p for p in matched if p > after.strip()]
+
+    root = vault_abs_root(vault_id)
+    rows = []
+    for rel in matched[:limit]:
+        try:
+            updated = timefmt.iso_local(os.path.getmtime(os.path.join(root, rel)))
+        except OSError:                        # listed then removed - report the row
+            updated = None
+        rows.append({"doc_id": rel,
+                     "title": os.path.basename(rel)[:-3],
+                     "updated_at": updated})
+
+    notes = ["agent-owned area: titles are filenames; use read_document for content"]
+    if n_logs_hidden:
+        notes.append(f"{n_logs_hidden} per-run log page(s) omitted - add "
+                     f"'{AGENT_LOGS_SUBDIR}/' to path_prefix to list them")
+    if tag.strip():
+        notes.append("tag filter IGNORED here - agent-owned pages are not tag-indexed")
+    return _rows_to_listing(rows, total, limit, "; ".join(notes))
+
+
 def list_documents(vault_id: str, path_prefix: str = "", tag: str = "",
                    limit: int = LIST_DOCS_DEFAULT_LIMIT, after: str = "") -> str:
     """Vault-scoped document listing, optionally filtered by folder prefix
-    and/or tag. Agent-owned pages are excluded (location rule). Returns a header
-    line ("N of TOTAL matching page(s)") followed by one JSON row per page.
+    and/or tag. Returns a header line ("N of TOTAL matching page(s)") followed by
+    one JSON row per page.
+
+    Agent-owned pages (AGENT_OUTPUT_DIR) are hidden from an ordinary listing -
+    that is the location rule keeping agent output out of corpus work. Naming that
+    folder in `path_prefix` is an explicit request for it and IS honored, via the
+    filesystem: peer agents' reports have to be discoverable by something, and this
+    is the only tool that can enumerate.
 
     KEYSET-paged by doc_id: a whole personal-scale vault fits in one call, but a
     vault larger than `limit` is still fully reachable - the header hands back a
     `continue with after='<last doc_id>'` cursor. Unlike the kernel client this
     does NOT auto-paginate (the rows land in the model's context, which must stay
     bounded); the agent pages on demand when the header says more remain."""
-    from config import AGENT_OUTPUT_DIR
     from src.rag_search import _get_pg_connection
     from src.vault_analysis import _like_prefix
 
+    prefix = (path_prefix or "").strip().lstrip("/")
+    if prefix.split("/", 1)[0] == AGENT_OUTPUT_DIR:
+        return _list_owned_area(vault_id, prefix, tag, limit, after)
+
     # Build the filter once; reuse for the COUNT (true total) and the page query.
-    where = ["d.vault_id = %s AND d.doc_exists = TRUE", "d.doc_id NOT LIKE %s"]
-    binds: list = [vault_id, AGENT_OUTPUT_DIR + "/%"]
+    # The exclusion MUST be escaped: `_` is a LIKE wildcard, so a raw "_dada/%"
+    # also swallows "Xdada/..." (see _like_prefix).
+    where = ["d.vault_id = %s AND d.doc_exists = TRUE",
+             "d.doc_id NOT LIKE %s ESCAPE '\\'"]
+    binds: list = [vault_id, _like_prefix(AGENT_OUTPUT_DIR + "/")]
     if path_prefix.strip():
         where.append("d.doc_id LIKE %s ESCAPE '\\'")
         binds.append(_like_prefix(path_prefix))
@@ -205,12 +290,7 @@ def list_documents(vault_id: str, path_prefix: str = "", tag: str = "",
     finally:
         conn.close()
 
-    header = f"list_documents: {len(rows)} of {total} matching page(s)"
-    if len(rows) == limit:      # a full page: more may remain - hand back the cursor
-        header += (f" - MORE MAY REMAIN; continue with after='{rows[-1]['doc_id']}', "
-                   f"or narrow with path_prefix/tag")
-    body = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
-    return header + ("\n" + body if body else "")
+    return _rows_to_listing(rows, total, limit)
 
 
 # read_document truncation-window bounds. Single-sourced here into BOTH the
@@ -708,7 +788,8 @@ GENERIC_TOOL_DEFINITIONS = [
         "description": "List pages in this vault, optionally restricted to a folder and/or a tag.",
         "parameters": {"type": "object", "properties": {
             "path_prefix": {"type": "string", "default": "",
-                            "description": "Only pages whose path starts with this folder prefix (e.g. 'Physics/')."},
+                            "description": "Only pages whose path starts with this folder prefix (e.g. 'Physics/'). Agent-owned pages are hidden unless you name that folder explicitly - pass "
+                            f"'{AGENT_OUTPUT_DIR}/agents/<slug>/' to list another agent's reports and logs."},
             "tag": {"type": "string", "default": "",
                     "description": "Only pages carrying this tag."},
             "limit": {"type": "integer",

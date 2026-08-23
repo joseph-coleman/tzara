@@ -39,6 +39,10 @@ async def _null_cm():
 
 MAX_AGENT_ITERATIONS = 10
 
+# Placeholder final_text for a loop that ran out of iterations mid-tool-call.
+# Callers that judge a run's final text must recognize it as a non-answer.
+MAX_STEPS_SENTINEL = "(Reached maximum steps.)"
+
 # How many times to re-request a single step that ended on a malformed-stream error
 # (Ollama could not parse a tool call) before giving up and surfacing it as a failure.
 MAX_STREAM_ERROR_RETRIES = 2
@@ -418,6 +422,6 @@ async def run_agent_loop(
         # Max iterations reached - the model still wanted to call tools when the
         # budget ran out. Flag for the caller's resume affordance.
         result.reached_max_steps = True
-        result.final_text = "(Reached maximum steps.)"
+        result.final_text = MAX_STEPS_SENTINEL
 
     yield {"type": "result", "result": result}

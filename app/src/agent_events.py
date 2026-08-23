@@ -52,8 +52,9 @@ transport around it. Loop guards implemented here:
   - self-exclusion (trigger_matches): an agent never matches events about
     itself - by subject, by ``agent:<slug>`` actor, or by cause_run_id prefix
   - depth cap: events at depth >= max_depth match nobody
-  - cooldown / budget / already-active: eligible events are RETAINED in the
-    pool (deferred, never dropped) until the agent may fire again
+  - cooldown / budget / already-active / global run lock held: eligible events
+    are RETAINED in the pool (deferred, never dropped) until the agent may fire
+    again
   - max-age: stale pool events are discarded
   - static cycle check (validate_trigger_graph): NAMED subscriptions to
     run-emitted events form a dependency graph; cycles are a load-time error
@@ -386,7 +387,8 @@ def plan_dispatch(agents: list[tuple[str, list, list]], pool: list[dict],
                   now: datetime.datetime, active: set, cooling: set,
                   budget_used: dict, *, max_depth: int, budget_per_hour: int,
                   max_age_s: int,
-                  unavailable: set | frozenset = frozenset()) -> DispatchPlan:
+                  unavailable: set | frozenset = frozenset(),
+                  run_lock_held: bool = False) -> DispatchPlan:
     """Decide fires/deletes/retentions for one tick. Pure - all Redis state
     comes in as arguments (agents: (slug, triggers, target_vaults)).
 
@@ -451,6 +453,17 @@ def plan_dispatch(agents: list[tuple[str, list, list]], pool: list[dict],
             continue
         if budget_used.get(slug, 0) >= budget_per_hour:    # guard 4: defer
             plan.deferred[slug] = {"reason": "over hourly event budget",
+                                   "events": len(per_slug[slug])}
+            continue
+        if run_lock_held:                                  # guard 7: defer
+            # LAST, so a more specific reason always wins: an agent that is also
+            # cooling would not run even with the lock free. Guard 6 asks whether
+            # THIS agent is busy; this asks whether ANY agent is - the condition
+            # run_agent_task actually enforces. Without it the planner fires into a
+            # lock it never consulted and the run is dropped, because delivery is
+            # recorded at enqueue.
+            plan.deferred[slug] = {"reason": "another agent run holds the global "
+                                             "run lock",
                                    "events": len(per_slug[slug])}
             continue
         by_vault: dict[str, list[dict]] = {}

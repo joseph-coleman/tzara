@@ -33,6 +33,7 @@ import subprocess
 import time
 
 from config import (
+    AGENT_OUTPUT_DIR,
     DEFAULT_VAULT,
     DEFAULT_WIKI_PAGE,
     HOST_HISTORY_LOCATION,
@@ -635,10 +636,24 @@ def init_vault_repo(slug: str) -> None:
 # Vault creation / bootstrap
 # ---------------------------------------------------------------------------
 
-def create_vault(slug: str, display_name: str | None = None) -> dict:
+def create_vault(slug: str, display_name: str | None = None,
+                 seed: bool = True) -> dict:
     """Create a new vault: make the work-tree dir, provision its separated git repo,
-    and register metadata. Returns the listing entry. Raises ValueError on a bad slug
-    or if the work tree already exists (use a different slug).
+    register metadata, and (unless ``seed`` is False) copy in the starter content.
+    Returns the listing entry. Raises ValueError on a bad slug or if the work tree
+    already exists (use a different slug).
+
+    Seeded from the SAME ``app/seed/default/`` tree as the startup-provisioned default
+    vault, so a user-created vault opens on a real start page instead of a 404 -- the
+    seed's ``{{vault}}`` placeholders resolve to THIS slug. Registration runs first so
+    the vault's own display name is in ``.tzara/config.json`` before the seed pass
+    records its marker there.
+
+    ``seed=False`` gives a genuinely empty vault -- for importing an existing note
+    collection, where a Tzara welcome page is just something to delete. Declining still
+    records the ``seeded`` marker, because that field means "this vault is done with the
+    default seed" and an explicit no is at least as durable an answer as deleting a
+    seeded page would be.
     """
     validate_slug(slug)
     if is_system_vault(slug):
@@ -652,6 +667,10 @@ def create_vault(slug: str, display_name: str | None = None) -> dict:
     os.makedirs(work, exist_ok=False)
     init_vault_repo(slug)
     register_vault(slug, display_name)
+    if seed:
+        _seed_vault_tree(slug, "default")
+    else:
+        update_vault_config(slug, seeded=["default"])
     return {"vault_id": slug, "display_name": display_name or slug}
 
 
@@ -710,8 +729,16 @@ def _seed_vault_tree(slug: str, seed_name: str) -> None:
 
     work = vault_abs_root(slug)
     seeded: list[str] = []
-    for dirpath, _dirs, files in os.walk(src_root):
+    for dirpath, dirs, files in os.walk(src_root):
+        # Content only. Control dirs (.git / .tzara / .obsidian) describe the SEED, not
+        # the vault being seeded, and the agent output area is runtime accretion -- the
+        # dev override mounts these seed trees as live vaults, so both appear on disk
+        # here even though neither is part of the shipped seed.
+        dirs[:] = [d for d in dirs
+                   if not d.startswith(".") and d != AGENT_OUTPUT_DIR]
         for name in files:
+            if name.startswith("."):
+                continue
             src = os.path.join(dirpath, name)
             rel = os.path.relpath(src, src_root)
             dest = os.path.join(work, rel)

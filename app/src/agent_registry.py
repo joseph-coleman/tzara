@@ -503,6 +503,36 @@ def get_agent_checked(slug: str) -> AgentDef | None:
     return None
 
 
+def agent_owner(slug: str) -> str:
+    """Owned-area owner segment for an agent: "agents/{slug}".
+
+    Namespaced so agent output lands at `{AGENT_OUTPUT_DIR}/agents/{slug}/`,
+    symmetric with editors' `editors/{slug}/` (no collision with an agent literally
+    called "editors"). THE spelling of that segment - do not rebuild it inline.
+    """
+    return f"{AGENTS_SUBDIR}/{slug}"
+
+
+def owned_rel(slug: str, filename: str) -> str:
+    """Vault-relative path of a file in `slug`'s owned area. THE join - callers
+    that already hold an AgentDef use this and skip agent_output_rel's re-read."""
+    return f"{AGENT_OUTPUT_DIR}/{agent_owner(slug)}/{filename}"
+
+
+def agent_output_rel(slug: str) -> str | None:
+    """Vault-relative path of `slug`'s output page, or None if it has no definition.
+
+    The one place that answers "where does agent X write its report?" for a caller
+    holding only a slug - an event-triggered agent naming the peer that fired it, a
+    tool resolving a cross-agent reference. Reads the definition, so prefer
+    owned_rel when the AgentDef is already in hand. None (not a guessed path) for an
+    unknown or deleted agent, so callers degrade instead of pointing at a page that
+    will never exist.
+    """
+    d = get_agent(slug)
+    return None if d is None else owned_rel(slug, d.output)
+
+
 def get_def_git_hash(slug: str) -> str:
     """Short hash of the commit holding this agent's CURRENT definition -
     recorded in run logs so "which version ran" stays answerable.
@@ -586,10 +616,7 @@ def build_background_agent(agent: AgentDef):
     async def _execute(name, args, vault_id, status_cb):
         return await caps[name]["execute"](name, args, vault_id, status_cb)
 
-    # Owned-area owner: "agents/{slug}" so agent output lands at _dada/agents/{slug}/,
-    # symmetric with editors' _dada/editors/{slug}/ (no name collision with an agent
-    # literally called "editors"). `name` stays the bare slug (identity).
-    owner = f"agents/{agent.slug}"
+    owner = agent_owner(agent.slug)      # `name` stays the bare slug (identity)
 
     async def _sink(vault_id, body):
         return await write_agent_output(vault_id, owner, agent.output, body,
@@ -612,8 +639,8 @@ def build_background_agent(agent: AgentDef):
         custom_tool_names=custom_tool_names,
         mode=agent.mode,
         log=agent.log,
-        output_rel=f"{AGENT_OUTPUT_DIR}/{owner}/{agent.output}",
+        output_rel=owned_rel(agent.slug, agent.output),
         memory=agent.memory,
         memory_prompt=agent.memory_prompt,
-        memory_rel=f"{AGENT_OUTPUT_DIR}/{owner}/{AGENT_MEMORY_FILE}",
+        memory_rel=owned_rel(agent.slug, AGENT_MEMORY_FILE),
     )

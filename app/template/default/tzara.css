@@ -2848,11 +2848,13 @@ pre.chat-code-proposal {
 .cm-ai-working-spinner {
     width: 0.8em;
     height: 0.8em;
-    border: 2px solid var(--darker);
+    border-right: 2px solid var(--darker);
+    border-left: 2px solid var(--darker);
     border-top: 1px solid var(--lighter);
+    border-bottom: 1px solid var(--lighter);
     border-radius: var(--radius-pill);
     animation: cm-ai-spin 0.7s linear infinite;
-    background: conic-gradient(from var(--rotation), var(--base-color), var(--base-60),var(--base-120),var(--base-180), var(--base-240), var(--base-300), var(--base-color)  );
+    /* background: conic-gradient(from var(--rotation), var(--base-color), var(--base-60),var(--base-120),var(--base-180), var(--base-240), var(--base-300), var(--base-color)  ); */
 }
 
 @keyframes cm-ai-spin {

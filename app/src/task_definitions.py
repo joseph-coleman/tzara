@@ -252,7 +252,7 @@ async def run_agent_task(agent_slug: str, vault_id: str | None = None,
     from src import agent_registry
     from src.background_agents import (
         AgentCancelled, make_worker_llm, run_background_agent)
-    from src.events import emit, format_trigger_note
+    from src.events import emit, format_trigger_note, repool_trigger_events
     from src.llm_gate import record_runlock
 
     trigger_note = format_trigger_note(trigger_events) if trigger_events else None
@@ -318,8 +318,16 @@ async def run_agent_task(agent_slug: str, vault_id: str | None = None,
         if not got_lock:
             holder = await r.get(AGENT_RUN_LOCK_KEY)
             await record_runlock(agent_slug, deferred=True)
-            print(f"run_agent_task: deferring '{agent_slug}' (lock held by {holder})")
+            # An EVENT-triggered run is turned away here having already been marked
+            # delivered at enqueue, so without this it is lost outright rather than
+            # retried. A scheduled run needs no equivalent: its occurrence stays due
+            # (last-run is stamped on lock ACQUISITION, below) and the next tick
+            # tries again. Re-pooling gives the event path the same guarantee.
+            n_repooled = await repool_trigger_events(r, agent_slug, trigger_events)
+            print(f"run_agent_task: deferring '{agent_slug}' (lock held by {holder})"
+                  + (f"; re-pooled {n_repooled} trigger event(s)" if n_repooled else ""))
             return {"status": "deferred", "agent": agent_slug,
+                    "repooled": n_repooled,
                     "reason": f"another agent run is active ({holder})"}
         await record_runlock(
             agent_slug, wait_ms=int((time.monotonic() - _lock_t0) * 1000))

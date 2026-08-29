@@ -215,12 +215,48 @@ class WikiDoc:
 
         return False, file_path, file_name
 
+    # Set by _canonicalize_path_list when the URL's folder segments did not match
+    # their on-disk names. Callers use it to redirect to the canonical URL.
+    _path_canonicalized = False
+
+    def _canonicalize_path_list(self):
+        """Pin this doc's folder segments to their real on-disk names, in place.
+
+        Runs before _test_existence so every path _encode() later derives -- the
+        filesystem path, the doc_id, the display URL -- names the directories git
+        actually tracks. Without it a mis-cased URL still reads and writes (the
+        vault bind mount is case-insensitive) but is invisible to git's
+        case-sensitive pathspecs, and `save_version` dies on an empty commit.
+
+        Skips /template/* and favicon, which _test_existence resolves against the
+        install tree rather than the vault root.
+        """
+        path_list = self._path_list
+        if not path_list or not any(path_list):
+            return
+        if path_list[0] == "template" or self._file_name == "favicon.ico":
+            return
+        folded = WikiDoc._resolve_dirs_in_root(vault_abs_root(self._vault), path_list)
+        if folded == list(path_list):
+            return
+        self._path_canonicalized = True
+        self._path_list = folded
+        self._path = "/".join(folded)
+        self.url_pieces["path_list"] = folded
+        self.url_pieces["path"] = self._path
+
+    def path_was_canonicalized(self):
+        """True when the requested URL's folders differed in case/separator from disk."""
+        return self._path_canonicalized
+
     def exists(self):
         if not self.url_pieces:
             return False
 
         # if hasattr(self, "_exists"):
         #     return self._exists
+
+        self._canonicalize_path_list()
 
         self._exists, self._file_path, self._file_name = WikiDoc._test_existence(
             url_pieces=self.url_pieces, vault=self._vault
@@ -780,6 +816,63 @@ class WikiDoc:
         return None
 
     @staticmethod
+    def _resolve_dirs_in_root(root, path_list):
+        """Fold each directory segment of path_list onto its real on-disk name.
+
+        Only the basename was ever resolved against disk; folder segments arrived
+        verbatim from the URL. On a case-insensitive bind mount a mis-cased folder
+        still reads and writes, but git pathspecs are case-SENSITIVE -- the index
+        holds the true-case path, so `git add` stages nothing and `git commit`
+        exits 1. Folding here keeps every path _encode() derives (filesystem path,
+        doc_id, display URL) pinned to the names git actually tracks.
+
+        Folds per-segment through wikilink_key, so case AND SPACE_CONVERSION_ORDER
+        separators fold exactly as they do for the filename (_resolve_name_in_dir);
+        ties break on separator_rank then an exact-case match. The first segment
+        with no on-disk match is kept verbatim along with every segment after it,
+        so save()'s makedirs can still create a new folder.
+
+        Returns a new list; never mutates the input.
+        """
+        out = []
+        cur = root
+        folding = True
+        for seg in path_list:
+            if not seg:
+                out.append(seg)
+                continue
+            match = None
+            if folding:
+                target_key = wikilink_key(seg)
+                candidates = []
+                try:
+                    # os.scandir, not Path.iterdir: DirEntry.is_dir() answers from
+                    # the directory read's cached type, while Path.is_dir() stats
+                    # every sibling -- ~1.5ms vs ~55ms per segment on the vault's
+                    # 9p/NTFS mount, on a call made for every page view.
+                    with os.scandir(cur) as entries:
+                        for entry in entries:
+                            if not entry.is_dir():
+                                continue
+                            if wikilink_key(entry.name) == target_key:
+                                exact = 0 if entry.name == seg else 1
+                                candidates.append(
+                                    (separator_rank(entry.name), exact, entry.name))
+                except OSError:
+                    candidates = []
+                if candidates:
+                    candidates.sort()
+                    match = candidates[0][2]
+            if match is None:
+                # Unmatched segment -> a folder yet to be created. Stop folding so
+                # the rest of the path stays exactly as the caller asked for it.
+                folding = False
+                match = seg
+            out.append(match)
+            cur = os.path.join(cur, match)
+        return out
+
+    @staticmethod
     def _resolve_name_in_dir(dir_path, stem, allowed_exts=None):
         """Find the on-disk file matching a wikilink target inside dir_path.
 
@@ -794,24 +887,37 @@ class WikiDoc:
 
         Returns the actual path on disk, or None. This generalizes
         _resolve_case_insensitive: folding separators as well as case.
+
+        Filter order is deliberate: extension and key are pure string tests on the
+        dirent NAME, so they cost nothing, while is_file() may cost a stat. Testing
+        names first leaves the type check to the handful of entries that already
+        match -- typically one -- instead of every sibling. Paired with os.scandir
+        (whose DirEntry answers from the type cached by the directory read, unlike
+        Path.iterdir()), this is the difference between ~1 and ~N stat syscalls at
+        ~0.9ms each on the vault's 9p/NTFS mount, on the hot path of every page view.
         """
-        if not stem or not Path(dir_path).is_dir():
+        if not stem or not os.path.isdir(dir_path):
             return None
         target_key = wikilink_key(stem)
         matches = []
-        for entry in Path(dir_path).iterdir():
-            if not entry.is_file():
-                continue
-            entry_stem, entry_ext = os.path.splitext(entry.name)
-            if allowed_exts is not None and entry_ext.lower() not in allowed_exts:
-                continue
-            if wikilink_key(entry_stem) == target_key:
-                exact = 0 if entry_stem == stem else 1
-                matches.append((separator_rank(entry_stem), exact, entry.name))
+        try:
+            with os.scandir(dir_path) as entries:
+                for entry in entries:
+                    entry_stem, entry_ext = os.path.splitext(entry.name)
+                    if allowed_exts is not None and entry_ext.lower() not in allowed_exts:
+                        continue
+                    if wikilink_key(entry_stem) != target_key:
+                        continue
+                    if not entry.is_file():
+                        continue
+                    exact = 0 if entry_stem == stem else 1
+                    matches.append((separator_rank(entry_stem), exact, entry.name))
+        except OSError:
+            return None
         if not matches:
             return None
         matches.sort()
-        return str(Path(dir_path) / matches[0][2])
+        return os.path.join(dir_path, matches[0][2])
 
     @staticmethod
     def _frontmatter_span(content: str) -> tuple[int, int] | None:
@@ -1145,6 +1251,9 @@ class WikiDoc:
         else:
             return False
 
+        # Fold the folder segments the same way exists() does, so both existence
+        # paths agree on a mis-cased or mixed-separator directory.
+        path_list = WikiDoc._resolve_dirs_in_root(vault_abs_root(vault), path_list)
         wiki_dir = os.path.join(vault_root(vault), *path_list)
         resolved = WikiDoc._resolve_name_in_dir(wiki_dir, stem, allowed_exts)
         return resolved if resolved else False

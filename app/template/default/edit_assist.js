@@ -320,7 +320,7 @@
           // Clickable links to the external pages (digest, memory). Open in a new
           // tab so the user's edit session isn't navigated away from.
           (this.s.noticeLinks || []).forEach((lk, i) => {
-            if (i) ok.appendChild(document.createTextNode(" · "));
+            if (i) ok.appendChild(document.createTextNode(" | "));
             const a = document.createElement("a");
             a.className = "cm-ai-notice-link";
             a.href = lk.url;
@@ -689,7 +689,7 @@
         chip.appendChild(cancel);
         const hint = document.createElement("span");
         hint.className = "cm-ai-diff-hint";
-        hint.textContent = "Tab / Shift-Tab: next / prev · Space: keep or apply · Enter: apply all · Esc: cancel";
+        hint.textContent = "Tab/Shift-Tab : next/prev | Space : keep or apply | Enter : apply all | Esc : cancel";
         wrap.appendChild(chip);
         wrap.appendChild(hint);
         return wrap;

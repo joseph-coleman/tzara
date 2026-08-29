@@ -536,6 +536,17 @@ async def view_document(request: Request):
     wikidoc, vault = _doc_from_request(request)
     print("url path = ", request.url.path)
 
+    # The URL named this document's folders with a different case/separator than
+    # disk uses. Send the browser to the canonical form so the non-canonical path
+    # can't be bookmarked or shared onward -- it resolves everywhere except git,
+    # whose pathspecs are case-sensitive.
+    if wikidoc.path_was_canonicalized() and wikidoc.exists():
+        canonical = wikidoc.display_url_path()
+        if canonical:
+            qs = request.url.query
+            return RedirectResponse(
+                "/" + canonical + (f"?{qs}" if qs else ""), status_code=302)
+
     file_path = wikidoc.file_path()
 
     print("file path ", file_path)
@@ -2710,7 +2721,7 @@ async def manage_tasks(request: Request):
                     _links = [f"[note](/wiki/{_t}/{_owner}/memory)"]
                     if _ledgers_exist(_t, _a.slug):
                         _links.append(f"[ledgers](/wiki/{_t}/{_owner}/ledgers)")
-                    _parts.append(f"{_t}: " + " · ".join(_links))
+                    _parts.append(f"{_t}: " + " &bull; ".join(_links))
                 _mem = " - ".join(_parts)
             raw_markdown += f"| {_def_link} | {_a.description} | {_runs} | {_mem} |\n"
 
@@ -3257,7 +3268,7 @@ async def editors_page(request: Request):
                 tools.append("`" + ", ".join(d.capabilities) + "`")
             if d.custom_tools:
                 tools.append("`" + ", ".join(t["name"] + "()" for t in d.custom_tools) + "`")
-            tools_cell = " · ".join(tools) if tools else "–"
+            tools_cell = " &bull; ".join(tools) if tools else "–"
             op_cell = f"note → `{d.output}`" if d.operation == "note" else d.operation
             mem_cell = "✓" if d.memory else "–"
             # Mark an overridden consolidation prompt without reproducing it - a

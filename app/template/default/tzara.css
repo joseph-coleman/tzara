@@ -1622,7 +1622,7 @@ details.callout[open]  .callout-title-text::after {
         padding: 2px 0;
     }
     & .widget-fileupload-status {
-        font-size:  var(--text-sm);
+        font-size:  var(--text-smd);
         color: var(--darker);
     }
     /* Progress bars (IntProgress, FloatProgress) */
@@ -1971,12 +1971,12 @@ details.callout[open]  .callout-title-text::after {
 /* Muted status line shown next to the Reset button. */
 .chat-notice {
     color: color-mix(in oklab, var(--fg-color) 50%, var(--bg-color));
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     font-style: italic;
 }
 
 .chat-reset-btn {
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     padding: 0.2em 0.8em !important;
 }
 
@@ -2034,7 +2034,7 @@ details.callout[open]  .callout-title-text::after {
     background: transparent;
     border: none;
     color: color-mix(in oklab, var(--fg-color) 55%, var(--bg-color));
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     text-align: center;
     max-width: 100%;
     padding: var(--space-xs) 0;
@@ -2059,7 +2059,7 @@ details.callout[open]  .callout-title-text::after {
 
 /* Quiet sources footer. */
 .chat-sources {
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     padding: var(--space-md);
     margin-top: var(--space-sm);
     color: color-mix(in oklab, var(--fg-color) 55%, var(--bg-color));
@@ -2100,14 +2100,14 @@ details.callout[open]  .callout-title-text::after {
    admonition system natively. These rules handle chat-specific layout, the
    muted preview/code panel, and the Continue-card warning re-skin. */
 .chat-action-header {
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     margin-bottom: var(--space-sm);
     color: color-mix(in oklab, var(--fg-color) 72%, var(--bg-color));
     font-weight: 600;
 }
 
 .chat-action-header code {
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     background: color-mix(in oklab, var(--base-color) 12%, var(--bg-color));
     padding: 0.1em 0.3em;
     border-radius: var(--radius-sm);
@@ -2136,7 +2136,7 @@ details.callout[open]  .callout-title-text::after {
     padding: var(--space-sm);
     background: color-mix(in oklab, var(--fg-color) 6%, var(--bg-color));
     border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
 }
 
 .chat-action-preview pre {
@@ -2150,7 +2150,7 @@ details.callout[open]  .callout-title-text::after {
 pre.chat-code-proposal {
     margin: 0;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     line-height: 1.45;
     white-space: pre;
     overflow-x: auto;
@@ -2163,7 +2163,7 @@ pre.chat-code-proposal {
 .chat-action-buttons {
     display: flex;
     gap: var(--space-sm);
-    margin-top: var(--space-sm);
+    margin-top: var(--space-smd);
 }
 
 /* Buttons intentionally use the native #document button base-color style for
@@ -2172,7 +2172,7 @@ pre.chat-code-proposal {
     padding: var(--space-xs) var(--space-lg);
     border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
 }
 
 .chat-action-btn:disabled {
@@ -2189,7 +2189,7 @@ pre.chat-code-proposal {
 /* ---- Chat: diff preview ----
    Color tokens are shared with #document .diff_add/.diff_del/.diff_not
    (defined inside #document around line 1115). */
-.chat-diff { font-family: monospace; font-size: var(--text-sm); white-space: pre-wrap; }
+.chat-diff { font-family: monospace; font-size: var(--text-smd); white-space: pre-wrap; }
 .chat-diff .diff-del {
     color: color-mix(in oklab, var(--fg-color) 30%, var(--color-danger) 70%);
     background-color: color-mix(in oklab, var(--bg-color) 70%, var(--color-danger-bg) 30%);
@@ -2208,7 +2208,7 @@ pre.chat-code-proposal {
 .chat-msg-status {
     color: color-mix(in oklab, var(--fg-color) 50%, var(--bg-color));
     font-style: italic;
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     animation: chat-status-pulse 1.59s ease-in-out infinite;
 }
 
@@ -2274,7 +2274,7 @@ pre.chat-code-proposal {
     padding: 0.25em 0.5em;
     background: color-mix(in oklab, var(--base-color) 10%, var(--bg-color));
     border-radius: var(--radius-sm);
-    font-size:  var(--text-sm);
+    font-size:  var(--text-smd);
     font-weight: 600;
 }
 
@@ -2323,7 +2323,7 @@ pre.chat-code-proposal {
 }
 
 .sidebar-summary-text {
-    font-size:  var(--text-sm);
+    font-size:  var(--text-smd);
     /* line-height: 1.4; */
 }
 
@@ -2344,7 +2344,7 @@ pre.chat-code-proposal {
 
 .sidebar-related-link {
     display: block;
-    font-size:  var(--text-sm);
+    font-size:  var(--text-smd);
     padding: 0.15em 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2427,7 +2427,7 @@ pre.chat-code-proposal {
 
 .search-timing {
     color: var(--lighter);
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
 }
 
 /* classes to illustrate example markdown */
@@ -2596,6 +2596,7 @@ pre.chat-code-proposal {
     text-decoration: line-through;
     background: var(--color-danger-bg);
     opacity: 0.7;
+    margin-right: 0.25em;
 }
 
 .cm-ai-diff-ins {
@@ -2608,6 +2609,7 @@ pre.chat-code-proposal {
    proposed insertion is shown struck so it's clear what was passed over. */
 .cm-ai-diff-kept {
     border-bottom: 1px dotted var(--darker);
+    margin-right: 0.25em;
 }
 
 .cm-ai-diff-ins-rejected {
@@ -2628,9 +2630,9 @@ pre.chat-code-proposal {
    a pure deletion, whose widget holds only the toggle and no inserted text. */
 .cm-ai-hunk.focused,
 .cm-ai-diff-focus {
-    outline: 2px solid var(--color-warning);
+    outline: 2px outset var(--color-warning);
     outline-offset: 1px;
-    border-radius: var(--radius-sm);
+    /* border-radius: var(--radius-sm); */
 }
 
 /* Outline semantics match the fills: danger on the text going away, success on
@@ -2674,10 +2676,13 @@ pre.chat-code-proposal {
 /* Keyboard-control hint under the Apply / Cancel chip. */
 .cm-ai-diff-hint {
     display: block;
-    margin: 4px 0 0 6px;
+    /* margin: 4px 0 0 6px; */
     font-style: normal;
-    font-size: var(--text-sm);
-    opacity: 0.6;
+    font-size: var(--text-smd);
+    opacity: 0.8;
+    padding: 0 var(--space-sm);
+    border-left: var(--space-sm) solid var(--base-color);
+    border-right: var(--space-sm) solid var(--base-color);
 }
 
 /* The Apply / Cancel chip that trails a granular diff - carries no proposed
@@ -2704,15 +2709,15 @@ pre.chat-code-proposal {
     margin-left: 6px;
     vertical-align: baseline;
     font-style: normal;
-    font-size:  var(--text-sm);
+    font-size:  var(--text-smd);
 }
 
-.cm-ai-chip button {
+#document .cm-ai-chip button {
     border: 1px solid var(--darker);
-    background: var(--lighter);
+    /* background: var(--lighter); */
     color: var(--fg-color);
-    padding: 1px 6px;
-    border-radius: 3px;
+    padding: var(--space-xxs) var(--space-xs);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     font-size: inherit;
     line-height: 1.2;
@@ -2723,7 +2728,7 @@ pre.chat-code-proposal {
 }
 
 .cm-ai-chip-reject {
-    opacity: 0.85;
+    opacity: 1.0;
 }
 
 .cm-ai-chip button:hover {
@@ -2738,7 +2743,7 @@ pre.chat-code-proposal {
     margin-top: 4px;
     margin-left: 6px;
     font-style: normal;
-    font-size:  var(--text-sm);
+    font-size:  var(--text-smd);
     opacity: 0.75;
     line-height: 1.4;
 }
@@ -2866,14 +2871,14 @@ pre.chat-code-proposal {
 .cm-ai-error {
     color: var(--color-danger);
     font-style: normal;
-    font-size:  var(--text-sm);
+    font-size:  var(--text-smd);
 }
 
 /* op:note confirmation ("Saved to …") - positive twin of .cm-ai-error. */
 .cm-ai-notice {
     color: var(--color-success);
     font-style: normal;
-    font-size:  var(--text-sm);
+    font-size:  var(--text-smd);
 }
 .cm-ai-notice-link {
     color: var(--color-success);
@@ -2896,7 +2901,7 @@ pre.chat-code-proposal {
 }
 
 .slash-prompt-hint {
-    font-size:  var(--text-sm);
+    font-size:  var(--text-smd);
     opacity: 0.65;
     margin-bottom: 6px;
 }
@@ -2969,7 +2974,7 @@ pre.chat-code-proposal {
     background: var(--lightest);
     border: 1px solid var(--darker);
     border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     line-height: 1.4;
 }
 .chat-code-proposal code { white-space: pre; font-family: monospace; }
@@ -3095,7 +3100,7 @@ pre.chat-code-proposal {
     padding: 0.35rem 0.6rem;
     border-bottom: 1px solid var(--lighter);
     background: var(--lightest);
-    font-size: var(--text-sm);
+    font-size: var(--text-smd);
     font-weight: 600;
 }
 .md-transclusion-title a { color: var(--fg-color); text-decoration: none; }

@@ -17,19 +17,21 @@ logger = logging.getLogger("docversioning")
 
 class MarkdownGitVersioning:
 
-    def __init__(self, markdown_folder: str, git_dir: str | None = None):
+    def __init__(self, markdown_folder: str, git_dir: str | None = None,
+                 work_tree: str | None = None):
         """Initialize Git repository for the markdown folder.
 
         The container NEVER resolves the worktree's on-disk `.git` gitlink (its contents
         are host-facing -- see config's gitlink-direction note). Instead every git call
         pins the git-dir and work-tree explicitly. Callers pass a vault *root* whose
         basename is the slug, so the separated git-dir is derived via vault_git_dir; an
-        override is accepted for non-standard layouts.
+        override is accepted for non-standard layouts -- as it is for the work
+        tree, which otherwise resolves through the vault registry.
         """
         self.folder = Path(markdown_folder)
         slug = self.folder.name
         self.git_dir = git_dir or vault_git_dir(slug)
-        self.work_tree = vault_abs_root(slug)
+        self.work_tree = work_tree or vault_abs_root(slug)
         self._init_repo()
 
     # stderr signatures of transient repo-lock contention (another git process
@@ -38,6 +40,12 @@ class MarkdownGitVersioning:
     # so concurrent git on the same repo is normal and intermittently collides.
     _GIT_LOCK_SIGS = ("index.lock", "Unable to create", "cannot lock ref",
                       "another git process", "File exists")
+
+    def _git_cmd(self, *args):
+        """The argv every git call in this class runs. Shared so a failure raised
+        outside _run_git still reports the exact command that failed."""
+        return ["git", "-C", str(self.folder),
+                f"--git-dir={self.git_dir}", f"--work-tree={self.work_tree}", *args]
 
     def _run_git(self, *args, check=True, env=None):
         """Execute a git command against this vault's separated repo.
@@ -53,8 +61,7 @@ class MarkdownGitVersioning:
         cover (cross-file contention between the server's commit and the worker's
         watcher commit).
         """
-        cmd = ["git", "-C", str(self.folder),
-               f"--git-dir={self.git_dir}", f"--work-tree={self.work_tree}", *args]
+        cmd = self._git_cmd(*args)
         result = None
         for attempt in range(6):
             result = subprocess.run(
@@ -161,10 +168,12 @@ class MarkdownGitVersioning:
         except subprocess.CalledProcessError:
             pass  # no HEAD yet
 
-    def _commit(self, rel_path: str, message: str, author_name: str, author_email: str) -> str:
-        """Stage a file and commit. Returns the commit SHA."""
-        self._run_git("add", "--", str(rel_path))
+    # git reports an empty commit on STDOUT, not stderr.
+    _NOTHING_TO_COMMIT_SIGS = ("nothing to commit", "no changes added to commit",
+                               "nothing added to commit")
 
+    @staticmethod
+    def _author_env(author_name: str, author_email: str) -> dict:
         env = os.environ.copy()
         env.update({
             "GIT_AUTHOR_NAME": author_name,
@@ -172,8 +181,35 @@ class MarkdownGitVersioning:
             "GIT_COMMITTER_NAME": author_name,
             "GIT_COMMITTER_EMAIL": author_email or "",
         })
-        self._run_git("commit", "-m", message, env=env)
+        return env
+
+    def _commit_staged(self, message: str, env: dict, what: str = "") -> str | None:
+        """Commit whatever is staged. Returns the SHA, or None if nothing was staged.
+
+        An empty index is a no-op, not a server error: `git commit` exits 1 with
+        "nothing to commit", which as a raised CalledProcessError surfaced to the
+        user as a 500 on save. It is still worth a warning -- reaching here means a
+        caller staged a path git did not match (e.g. a pathspec whose directory case
+        differs from the index, which `git add` accepts while staging nothing).
+        """
+        result = self._run_git("commit", "-m", message, env=env, check=False)
+        if result.returncode != 0:
+            blob = (result.stdout or "") + (result.stderr or "")
+            if any(sig in blob for sig in self._NOTHING_TO_COMMIT_SIGS):
+                logger.warning(
+                    "git commit found nothing staged for %r (%s) - skipping commit.",
+                    what or message, self.git_dir)
+                return None
+            raise subprocess.CalledProcessError(
+                result.returncode, self._git_cmd("commit", "-m", message),
+                output=result.stdout, stderr=result.stderr)
         return self._run_git("rev-parse", "HEAD").stdout.strip()
+
+    def _commit(self, rel_path: str, message: str, author_name: str, author_email: str) -> str | None:
+        """Stage a file and commit. Returns the commit SHA, or None if nothing staged."""
+        self._run_git("add", "--", str(rel_path))
+        env = self._author_env(author_name, author_email)
+        return self._commit_staged(message, env, what=str(rel_path))
 
     def remove_file(
         self,
@@ -215,15 +251,8 @@ class MarkdownGitVersioning:
         if message is None:
             message = f"Move {old_rel.name} to {new_rel}"
 
-        env = os.environ.copy()
-        env.update({
-            "GIT_AUTHOR_NAME": author_name,
-            "GIT_AUTHOR_EMAIL": author_email or "",
-            "GIT_COMMITTER_NAME": author_name,
-            "GIT_COMMITTER_EMAIL": author_email or "",
-        })
-        self._run_git("commit", "-m", message, env=env)
-        commit_sha = self._run_git("rev-parse", "HEAD").stdout.strip()
+        env = self._author_env(author_name, author_email)
+        commit_sha = self._commit_staged(message, env, what=f"{old_rel} -> {new_rel}")
         self._maybe_update_commit_graph()
         return commit_sha
 

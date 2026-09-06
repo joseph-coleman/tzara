@@ -1,9 +1,8 @@
 ---
 type: agent
 Title: Math Of The Day
-Date: 2026-07-09 23:26:48.616830+00:00
 Tags: math-education, daily-article, wiki-automation, citation-format, topic-rotation, ledger-management
-log:true
+log: true
 mode: act
 # schedule: daily
 memory: true
@@ -12,7 +11,8 @@ output: math_of_the_day.md
 vaults: main
 capabilities: search_wiki, read_document, remember
 description: Provides a new math article every day.
-Summary: The agent must choose a fresh math topic not already listed in the “Topics covered” ledger, record it immediately with `remember`, then fetch Wikipedia references and write a complete article citing sources as plain Markdown links without inventing facts. Throughout, the agent must follow the ledger rules, use the provided citation format, and finish each run with a finished article.
+GenerateMetadata: false
+Summary: The Math Of The Day agent will generate a new math article daily. Edit this file and uncomment the schedule line in the frontmatter, or run this manually.
 ---
 
 # Prompt

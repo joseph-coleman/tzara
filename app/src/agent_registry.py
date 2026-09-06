@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from config import AGENT_MEMORY_FILE, AGENT_OUTPUT_DIR, SYSTEM_VAULT, vault_root
 from src.chunker import _fence_info
+from src.frontmatter import unquote
 from src.wikidoc import WikiDoc
 
 logger = logging.getLogger("agent_registry")
@@ -243,7 +244,7 @@ def parse_agent_file(slug: str, content: str) -> AgentDef:
     if fm.get("type", "") != "agent":
         d.errors.append("frontmatter must declare `type: agent`")
 
-    d.description = fm.get("description", "")
+    d.description = unquote(fm.get("description", ""))
     d.schedule = fm.get("schedule", "").strip()
     if d.schedule:
         from src.agent_schedule import ScheduleError, parse_schedule
@@ -388,8 +389,9 @@ max_iterations: 6
 # memory: true
 # index_output: true
 Title: {name}
-Date: {date}
+Created: {date}
 Tags: agent
+GenerateMetadata: false
 ---
 
 %%

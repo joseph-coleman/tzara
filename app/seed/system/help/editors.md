@@ -1,13 +1,19 @@
 ---
 title: Editoric Tools
-description: What editor tools are and how they add custom commands to the edit-mode "/" menu.
-Tags: editor-tools, llm, markdown, prompts, custom-python, note-taking
-Summary: Editor tools are saved commands invoked from the “/” menu that use an LLM to transform selected text or the caret position, performing operations such as replace, prepend, append, insert, or note, and can incorporate read‑only searches, custom Python functions, and memory across runs. Each tool is defined by a minimal markdown file containing a `type: editor` frontmatter block with a label and operation plus a prompt, and the system provides example tools and an [/editors] page to list and validate them. Users can create their own tools following the authoring documentation and wiki object reference.
+summary: What editor tools are and how they add custom commands to the edit-mode "/" menu.
+GenerateMetadata: false
 ---
 
 # What are editor tools?
 
-An **editor tool** is a saved command you run from the **"/" menu while editing a page**. You select some text - or select nothing and just leave the caret where you want new text - then type `/` (or press `Ctrl+Shift+/`, which works anywhere, including mid-word), pick your tool, and an LLM does something useful: rewrites it, reformats it, writes the missing paragraph, or files it away as a note.
+> "Agent is to Agentic as Editor is to Editoric."
+> -- Joe Coleman, circa 2026.
+
+![screenshot-slash-menu.png](screenshot-slash-menu.png){: style="float:right;border:3px double var(--base-color);padding:1em;"}
+
+An **editor** tool is a saved command you run from the **"/" menu while editing a page**. You select some text - or select nothing and just leave the caret where you want new text - then type `/` (or press `Ctrl+Shift+/`, which works anywhere, including mid-word), pick your tool, and an LLM does something useful: rewrites it, reformats it, writes the missing paragraph, or files it away as a note.
+
+The strip along the bottom of the menu describes whichever tool is highlighted, so you can arrow through the list and read what each one does before committing to it. That text is the tool's `description` - see [authoring editors](authoring_editors.md).
 
 If an [agent](agents.md) is an LLM that talks to itself in the background to tend your whole vault, an editor tool is the opposite: it's an LLM you reach for **in the moment**, pointed at exactly the text in front of you, with the result handed straight back to you to accept or reject.
 
@@ -38,18 +44,31 @@ That's it - a two-line frontmatter and a prompt is a complete, working tool. Eve
 The system vault ships a few example editors under `editors/`. Open any of them to read its definition:
 
 - **British Spelling** / **Secretary** - pure-prompt transforms (no tools).
-- **Decoder Ring** - a custom Python tool (ROT13/Atbash/reverse) run in the isolated kernel.
+- **Decoder Ring** - a custom Python tool (ROT13) run in the isolated kernel.
 - **Add to Glossary** / **Research Note** - `operation: note` tools that keep a growing, memory-assimilated digest.
 
 # Seeing what's installed
 
-The **[/editors](/editors)** page lists every editor tool with its settings and whether it's valid - including *why* an invalid one was rejected (a frontmatter mistake or a Python syntax error). It's the editor-tool counterpart to the `/agents` view.
+The **[/editors](/editors)** page lists every editor tool with its description, its settings, and whether it's valid - including *why* an invalid one was rejected (a frontmatter mistake or a Python syntax error). It's the editor-tool counterpart to the `/agents` view.
 
 # Making your own
 
 * [authoring editors](authoring_editors.md) - reference details for every field, the `editor` and `wiki` objects, memory, and validation.
 * [the wiki object](wiki-object.md) - the corpus-access object your custom Python tools use.
 
-## Related
+# Skillz, a comparison
+
+These Editor tools have a superficial resemblance to the Skill files popularized by Anthropic.  They both wrap reusable LLM behavior into a simple text file a human can edit.  However, they differ in the following ways:
+
+* A Skill is routed by a model, so the model determines when to use it based on trigger style language.  An Editor, by comparison, is human routed.
+* Skills have a lazy loading mechanism because they compete for space in a context window.  Tzara's Editors don't have that problem because only one tool runs at a time, which is great for small, local LLMs.  The architecture needed for a Skill is absent.
+* An Editor has a typed I/O contract versus a Skill's open ended instructions.  An editor declares input and output in the frontmatter via that `scope:` (what text is handed in) and `operation:` (where the result goes) fields.  This makes the Editor resemble a pure function, `text -> text`, where the editor determines placment, not the model.   A skill is a behavior modifier.
+* Skills inherit the permissions of their calling agent, so their safety gate is the permission prompt attached to some underlying tool, such as Bash.  Tzara shifts the safety gate to the output where each result appears behind an accept/reject prompt.  Escalation works differently as well: skill scripts run through the agent’s Bash at the agent’s trust level, whereas Tzara’s Python runs in an isolated Jupyter‑agent kernel, with schemas generated by `ast.parse` and no execution at registration.
+* Skills are stateless because their folder is read-only content, and nothing carries across sessions.  Editors can have `memory: true`, so an Editor can learn your style accross documents.
+* Skills stay around in an agent's loop, Editors are synchronous and have a defined termination condition.
+* Skills are portable, Editors are Tzara specific.
+* Editors are wiki pages and are first class artifacts, skills not so much.
+
+# Related
 - [agents](agents.md) - the background counterpart to editor tools
 - [Main](../Main.md)

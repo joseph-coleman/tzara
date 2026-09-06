@@ -491,7 +491,7 @@ async def _generate_metadata_impl(
 ) -> dict:
     """Shared implementation for tag/summary generation."""
     import ollama as _ollama
-    from src.frontmatter import parse_llm_tags
+    from src.frontmatter import metadata_generation_enabled, parse_llm_tags
     from src.llm_gate import get_llm_gate
 
     try:
@@ -504,6 +504,12 @@ async def _generate_metadata_impl(
     _index_flag = frontmatter.get("index", str(INDEX_DOCUMENT_FRONTMATTER_DEFAULT))
     if _index_flag.lower() in ("false", "no", "0"):
         return {"status": "skipped", "reason": "indexing disabled via frontmatter"}
+
+    # GenerateMetadata:false is a promise that nothing rewrites this page's AutoTags
+    # or Summary. The ingest path checks it before enqueueing; this is the guard for
+    # every other caller - the bulk actions and the legacy generate_tags_task.
+    if not metadata_generation_enabled(frontmatter):
+        return {"status": "skipped", "reason": "metadata generation disabled via frontmatter"}
 
     body = WikiDoc.strip_frontmatter(content)
 
@@ -594,6 +600,13 @@ async def _generate_metadata_impl(
         result["summary"] = summary
 
     if updated != content:
+        # Stamp AFTER the comparison, never before. This branch is what decides
+        # whether we write and git-commit at all, so a stamp applied up front would
+        # make it unconditionally true and turn every metadata run into a full
+        # rewrite + commit of every page whose tags came back identical.
+        updated = WikiDoc.stamp_metadata_updated(
+            updated, vault_id, normalized_url_path)
+
         try:
             r = get_async_redis()
             # Suppress the watcher's modify -> update_document_task enqueue for
@@ -679,6 +692,7 @@ async def generate_all_metadata_task(force: bool = False, vault_id: str | None =
     job_id = "metadata:all" if vault_id is None else f"metadata:vault:{vault_id}"
     # include_system=False: blessed system-vault files are human-authored and must
     # never receive LLM-generated frontmatter (rag_indexer enforces this too).
+    from src.frontmatter import metadata_generation_enabled
     from src.rag_indexer import enumerate_vault_markdown
     vault_files = enumerate_vault_markdown(vault_id, include_system=False)
     total_files = sum(len(f) for _, _, f in vault_files)
@@ -718,6 +732,12 @@ async def generate_all_metadata_task(force: bool = False, vault_id: str | None =
                 skipped += 1
                 continue
 
+            # Honor GenerateMetadata:false here too, so "force regenerate" cannot
+            # overwrite a hand-curated Summary on a page that opted out.
+            if not metadata_generation_enabled(frontmatter):
+                skipped += 1
+                continue
+
             # Check body length
             body = WikiDoc.strip_frontmatter(content)
             if len(body.strip()) < 50:
@@ -727,7 +747,7 @@ async def generate_all_metadata_task(force: bool = False, vault_id: str | None =
             # When not forcing, skip files that already have both summary and tags
             if not force:
                 has_summary = bool(frontmatter.get("summary", "").strip())
-                has_tags = bool(frontmatter.get("tags"))
+                has_tags = bool(frontmatter.get("autotags"))
                 if has_summary and has_tags:
                     skipped += 1
                     continue

@@ -386,6 +386,20 @@ def is_empty_run(body: str) -> bool:
     return not body or body == MAX_STEPS_SENTINEL
 
 
+def suspect_preserves_record(n_applied: int, n_staged: int) -> bool:
+    """True when a collapse-guard hit must still write output, memory and ledgers.
+
+    PURE - unit-tested in .test/test_output_collapse_guard.py. The guard's normal
+    answer is to preserve the LAST GOOD state, which is right while a suspect run
+    is only suspect TEXT. Once the run has reached the write gate in this vault it
+    has already changed it, and withholding the record does not undo the edits - it
+    leaves the vault changed and the bookkeeping blank, which is worse than a report
+    that might be wrong. The run is still raised as suspect either way; this decides
+    only whether the record of what it did survives.
+    """
+    return bool(n_applied or n_staged)
+
+
 async def write_agent_memory(vault_id: str, agent_slug: str, text: str) -> str:
     """Overwrite the agent's cross-run memory page and git-commit it.
 
@@ -1142,20 +1156,37 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
     # the system - tool-free, its own instruction, prompt caching off in the worker
     # - and rejecting it restores the empty output that broke downstream agents.
     # AGENT_REPORT_MIN_CHARS above is what guards this path instead.
+    # `suspect_kept`: flagged, but the writes below still run. See the branch.
+    suspect_kept: AgentOutputSuspect | None = None
     if error is None and not empty_run and not is_no_op(body) and not report_turn_used:
         previous_len = _collapsed_against_previous(vault_id, agent.output_rel, body)
         if previous_len is not None:
-            logger.warning(
-                "output-collapse guard rejected %s:%s - %d chars against a %d-char "
-                "previous page; output, memory and ledgers left untouched",
-                agent.name, vault_id, len(body), previous_len)
             # The excerpt is load-bearing, not decoration: with `log:` off there
             # is no page holding the rejected text, and this string is what
             # reaches /manage/monitor (failure_log truncates to DETAIL_CHARS).
             # Seeing that the text answers a DIFFERENT prompt is the diagnosis.
-            error = AgentOutputSuspect(
+            suspect = AgentOutputSuspect(
                 f"final output collapsed to {len(body)} chars against a "
                 f"{previous_len}-char previous page: {body[:100]!r}")
+            if suspect_preserves_record(n_applied, n_staged):
+                # The run reached the write gate in THIS vault, so its report
+                # describes edits that already exist on disk. Discarding the page,
+                # memory and ledgers here does not undo them - it leaves the vault
+                # changed and the bookkeeping blank, which is the drift the guard
+                # exists to prevent. Keep the record, raise at the end so the run
+                # still lands on /manage/monitor as suspect.
+                suspect_kept = suspect
+                logger.warning(
+                    "output-collapse guard flagged %s:%s - %d chars against a %d-char "
+                    "previous page; output, memory and ledgers KEPT (%d applied, "
+                    "%d staged this run)",
+                    agent.name, vault_id, len(body), previous_len, n_applied, n_staged)
+            else:
+                logger.warning(
+                    "output-collapse guard rejected %s:%s - %d chars against a %d-char "
+                    "previous page; output, memory and ledgers left untouched",
+                    agent.name, vault_id, len(body), previous_len)
+                error = suspect
 
     if error is None:
         # The output page is the human-facing report; cross-run memory now lives in
@@ -1221,10 +1252,16 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
         show_ledgers = bool(uses_ledgers(agent.memory, agent.tool_names)
                             or ledger_during or ledger_reserved)
         await _write_run_log(agent, vault_id, llm_mgr, run_result, duration,
-                             output_path, error, run_id, n_staged, n_applied,
+                             output_path, error or suspect_kept, run_id,
+                             n_staged, n_applied,
                              trigger_events, trigger_source,
                              (ledger_during, ledger_reserved) if show_ledgers else None,
-                             ledger_injection_note, report_turn_used)
+                             ledger_injection_note, report_turn_used,
+                             suspect_kept is not None)
+    # Raised only after the writes above, so a kept-suspect run keeps its page,
+    # memory and ledgers AND still surfaces as a failure on /manage/monitor.
+    if error is None and suspect_kept is not None:
+        error = suspect_kept
     if error is not None:
         raise error
 
@@ -1250,7 +1287,8 @@ async def _write_run_log(agent: BackgroundAgent, vault_id: str, llm_mgr,
                          trigger_source: str = "manual",
                          ledger_activity: tuple[list[str], list[str]] | None = None,
                          ledger_injection: str = "",
-                         report_turn_used: bool = False) -> None:
+                         report_turn_used: bool = False,
+                         suspect_kept: bool = False) -> None:
     """Per-run log page (crude store-full rendering; view-layer collapsing is a
     later refinement). Log failures must never mask the run's own outcome."""
     from src.events import format_trigger_summary   # lazy: import cycle
@@ -1299,6 +1337,18 @@ async def _write_run_log(agent: BackgroundAgent, vault_id: str, llm_mgr,
                   for ev in trigger_events]
     if cancelled:
         lines += ["", "## Cancelled", f"{error}"]
+    elif suspect and suspect_kept:
+        # Flagged but KEPT: the run wrote to the vault this run, so the report
+        # below is the only record of edits that already exist on disk.
+        lines += [
+            "", "> [!warning] Output flagged by the collapse guard - KEPT",
+            f"> {error}. This run applied {n_applied} and staged {n_staged} change(s),",
+            "> so the output page, cross-run memory and ledgers were written anyway -",
+            "> discarding them would leave the vault edited and the record blank.",
+            "> Check the report against the Activity list above; if it looks like it",
+            "> answers a DIFFERENT prompt, suspect the inference server's prompt cache",
+            "> rather than the agent definition, and review the applied changes.",
+            "", "## Final output", "", run_result.final_text or "(empty)"]
     elif suspect:
         lines += [
             "", "> [!warning] Output rejected by the collapse guard",

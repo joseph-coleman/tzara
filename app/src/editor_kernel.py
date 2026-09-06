@@ -27,12 +27,14 @@ new start EVICTS any prior session (a fresh edit supersedes an abandoned one).
 """
 
 import asyncio
+import inspect
 import logging
 
 from config import AGENT_TOOL_TIMEOUT_S, EDITOR_SERVICE_SECRET
 from src import agent_tokens
 from src import timefmt
 from src.agent_kernel import AgentKernelSession
+from src.frontmatter import CaseInsensitiveDict
 
 logger = logging.getLogger("editor_kernel")
 
@@ -77,7 +79,7 @@ class _Editor:
     def __init__(self, data):
         self.selection = data.get("selection", "")
         self.document = data.get("document", "")
-        self.frontmatter = data.get("frontmatter") or {}
+        self.frontmatter = _CaseInsensitiveDict(data.get("frontmatter") or {})
         self.path = data.get("path", "")
         n = len(self.document)
         self.selection_start = max(0, min(int(data.get("selection_start", 0) or 0), n))
@@ -104,12 +106,18 @@ class _Editor:
         return self.document[self.cursor:]
 
 editor = _Editor(_ED_DATA)
-del _Editor, _ED_DATA
+del _Editor, _ED_DATA, _CaseInsensitiveDict
 '''
 
 
 def _editor_setup(editor_data: dict) -> str:
-    return "_ED_DATA = " + repr(editor_data) + "\n" + _EDITOR_OBJECT_BODY
+    # repr() flattens a dict subclass to a plain literal, so the wrapper cannot
+    # ride across the wire - the class is injected as source and re-applied in
+    # _Editor.__init__. Taken from the live class so the two cannot drift.
+    cid = inspect.getsource(CaseInsensitiveDict).replace(
+        "class CaseInsensitiveDict(", "class _CaseInsensitiveDict(", 1)
+    return ("_ED_DATA = " + repr(editor_data) + "\n\n"
+            + cid + "\n" + _EDITOR_OBJECT_BODY)
 
 
 # --- one-active-session state (process-local) ------------------------------

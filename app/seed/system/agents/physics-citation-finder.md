@@ -7,6 +7,10 @@ output: Citation Finder Report.md
 max_iterations: 12
 mode: propose
 log: true
+GenerateMetadata: false
+Summary:  This is an example of how to craft an automated helper to suggest changes and edits, however minor. This agent demonstrates use of both built-in tools and a custom tool.  Any changes are staged for a user to approve or deny via the "mode" setting in the frontmatter.
+# uncomment the next line to enable a weekly schedule.
+# schedule: weekly
 ---
 
 # Prompt

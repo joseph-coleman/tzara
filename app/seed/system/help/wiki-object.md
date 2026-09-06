@@ -1,7 +1,7 @@
 ---
 title: The wiki object
-Summary: The `wiki` object is automatically injected into every Python kernel, with two variants: a read‑only page‑kernel client (`_WikiClient`) for inline Jupyter cells, and a richer agent‑kernel client (`_AgentWiki`) that can read page text, stage or apply writes, and edit specific sections, all confined to a single vault via server‑side isolation and HMAC tokens. Both expose the same read‑only query methods (e.g., `search`, `queryDocuments`), while the agent version adds text access, granular editing helpers, and argument‑coercion utilities for custom tools.
-Tags: python, jupyter, wiki-api, agent, vault, hmac, markdown
+summary: The `wiki` object is automatically injected into every Python kernel, with two variants; a read‑only page‑kernel client (`_WikiClient`) for inline Jupyter cells, and a richer agent‑kernel client (`_AgentWiki`) that can read page text, stage or apply writes, and edit specific sections, all confined to a single vault via server‑side isolation and HMAC tokens. Both expose the same read‑only query methods (e.g., `search`, `queryDocuments`), while the agent version adds text access, granular editing helpers, and argument‑coercion utilities for custom tools.
+GenerateMetadata: false
 ---
 
 # The `wiki` object
@@ -9,7 +9,7 @@ Tags: python, jupyter, wiki-api, agent, vault, hmac, markdown
 Every Python kernel Tzara spawns is seeded with an object named `wiki` that reaches back into the vault index. There are **two** implementations - same name, same read-only core, different execution context and different powers:
 
 - The **page `wiki`** (`_WikiClient`, in `jupyter_client.py`) lives in a **markdown page kernel** and backs the inline ```` ```jupyter ```` cells you write in a document.
-- The **agent `wiki`** (`_AgentWiki`, in `agent_kernel.py`) lives in the **isolated agent kernel** and backs the custom Python tools an agent file defines.
+- The **agent `wiki`** (`_AgentWiki`, in `agent_kernel.py`) lives in the **isolated agent kernel** and backs the custom Python tools an agent file defines.  This is also the same `wiki` object avilable to custom python tools in Editors.
 
 Both are injected automatically when the kernel starts - you never construct one. Both are pinned to a single vault at injection time, and vault isolation is enforced **server-side**: a kernel can only ever see its own vault.
 
@@ -28,7 +28,7 @@ Both are injected automatically when the kernel starts - you never construct one
 | Write pages | no - use the editor | yes - `write()` / `write_file()`, funneled through the write gate |
 | Argument coercion helpers | no | yes - `as_int` / `as_float` / `as_str` |
 
-If you are writing a ```` ```jupyter ```` cell in a page, you have the page `wiki`. If you are writing a fenced `python` tool inside an agent file, you have the agent `wiki`.
+If you are writing a ```` ```jupyter ```` cell in a page, you have the page `wiki`. If you are writing a fenced `python` tool inside an agent file or editor file, you have the agent `wiki`.
 
 ## Shared read-only methods (both objects)
 
@@ -136,3 +136,4 @@ The two objects are pure-stdlib source (`urllib` + `json`) injected as text into
     * [jupyter technical details](jupyter/jupyter-technical-details.md)
 * [authoring agents](authoring_agents.md)
 * [agent security](agent-security.md)
+* [editor object](authoring_editors.md#the-editor-object)

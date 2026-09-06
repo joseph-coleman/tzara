@@ -9,8 +9,9 @@ mode: act
 on: agent expanse-worldbuilder completed
 log: true
 memory: true
-Tags: wiki, hierarchy, link-management, worldbuilding, automation
-Summary: The Expanse Continuity Linker agent ensures the wiki vault remains a strict tree hierarchy by filing newly created or expanded pages under a single appropriate hub, adding missing up/down spine links, and pruning redundant lateral links (with limited removals and optional one peer link). It follows a detailed workflow using specific tools, records all actions in fixed ledgers, and outputs a concise markdown log after each Worldbuilder run.
+Tags: expanse, wiki, hierarchy, linking, pruning, worldbuilding, roleplaying
+Summary: The Expanse Continuity Linker automatically files newly created or expanded pages into the correct hub of a tree‑structured wiki, adds any missing up/down spine links, and prunes redundant lateral links to maintain a clean hierarchy. It records all actions in fixed ledgers and follows strict rules limiting edits to wikilinks in the “## Related” sections.
+GenerateMetadata: false
 ---
 
 # Prompt

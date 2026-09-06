@@ -586,7 +586,13 @@ def apply_wikilink(vault_id: str, source_doc: str, target_doc: str,
         return f"apply_wikilink: source '{source_doc}' not found on disk."
 
     target_stem = os.path.splitext(target_doc.lstrip("/"))[0]
-    wikilink = f"[[/{target_stem}]]"
+    # Plain form, NOT "[[/stem]]". The agents that call this also write prose
+    # links through propose_section_edit, and a model writes those the Obsidian
+    # way - unanchored. Emitting the root-anchored spelling here put two spellings
+    # of one link on the same page, which a pruning agent then reads as a
+    # duplicate. target_stem is the full vault-relative path minus extension, so
+    # the suffix match resolve_linkpath does on it is still unambiguous.
+    wikilink = f"[[{target_stem}]]"
 
     # Idempotency: does any existing link already resolve to the target? Matched
     # per path-segment (link_targets_doc), NOT by substring - a page linking
@@ -654,7 +660,15 @@ def remove_wikilink(vault_id: str, source_doc: str, target_doc: str,
                 "prose, not as a plain list bullet; left unchanged. Use "
                 "propose_section_edit if that sentence genuinely needs rewriting.")
 
-    kept = [ln for i, ln in enumerate(lines) if i not in set(bullets)]
+    # ONE bullet per call, not every bullet naming the target. A page can spell
+    # the same link twice, and deleting both when the agent asked to drop a
+    # duplicate severed pages from their hub instead of tidying them. Dropping
+    # the LAST match leaves the earliest bullet standing, so "remove the
+    # duplicate" keeps the original; a genuine prune of a single link is
+    # unchanged, and the caller is told what is left so it can call again.
+    drop = bullets[-1]
+    remaining = len(bullets) - 1
+    kept = [ln for i, ln in enumerate(lines) if i != drop]
     new_content = "\n".join(kept)
 
     # If that emptied the Related section, take the now-pointless heading too.
@@ -668,8 +682,10 @@ def remove_wikilink(vault_id: str, source_doc: str, target_doc: str,
         result = _stage(vault_id, src_rel, new_content, note)
     except Exception as e:  # pragma: no cover - defensive
         return f"remove_wikilink: staging failed for '{source_doc}': {e}"
-    return (f"remove_wikilink: {result} ({len(bullets)} link line(s) removed"
-            f"{' - ' + reason if reason else ''})")
+    return (f"remove_wikilink: {result} (1 link line removed"
+            + (f"; {remaining} further line(s) on this page still link to "
+               f"'{target_doc}' - call again to remove another" if remaining else "")
+            + f"{' - ' + reason if reason else ''})")
 
 
 # ---------------------------------------------------------------------------

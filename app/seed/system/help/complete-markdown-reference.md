@@ -1,6 +1,6 @@
 ---
-Title: complete-markdown-reference
-Date: 2026-07-16 00:07:16.173195+00:00
+Title: Complete Markdown Reference
+GenerateMetadata: false
 Tags: markdown, syntax, extensions, attributes, tables, footnotes, latex, admonitions
 Summary: The document is a complete cheat‑sheet of every markdown feature Tzara supports, covering basic syntax (headings, links, images, tables, lists, code fences, LaTeX) and advanced extensions such as comments, attribute lists, page embeds, footnotes, Jupyter code blocks, smarty‑pants typographic replacements, and both Tzara and Obsidian‑style admonitions/callouts. Each feature is illustrated with example markup and its rendered output, and references to configuration via the python‑markdown extensions are provided.
 ---
@@ -8,6 +8,8 @@ Summary: The document is a complete cheat‑sheet of every markdown feature Tzar
 This document is a complete reference sheet for every markdown syntax that Tzara supports.  And that I can remember.  Examples of markdown typically precede the result of what it generates.  Deviations from this pattern should be obvious. 
 
 Some of these features are from the extensions found in the `python-markdown` library.  See <https://python-markdown.github.io/extensions> for more details, and if you want to mess with stuff, look in `src/doctransform.py` for config information.
+
+Frontmatter - the `---` metadata block a page can open with - is the one thing deliberately left out here, because its keys change behavior rather than rendering. It has its own page: [frontmatter](frontmatter.md).
 
 You can add a table of contents anyware in the page, just add `[TOC]` somewhere, like so:
 
@@ -28,7 +30,10 @@ print("this is not included since it's commented out")
 ```
 
 Nothing to see here.
+
 %%
+
+<!-- This is an HTML comment.  It still exists in the file. -->
 `````
 
 Text above looks like this:
@@ -45,6 +50,7 @@ print("this is not included since it's commented out")
 Nothing to see here.
 %%
 
+<!-- This is an HTML comment.  It still exists in the file. -->
 
 
 # Headings

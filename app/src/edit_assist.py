@@ -37,6 +37,7 @@ from config import (
     LLM_MODEL,
 )
 from src import chunker
+from src.frontmatter import CaseInsensitiveDict
 from src import llm_backend
 from src import timefmt
 from src.wikidoc import WikiDoc
@@ -49,8 +50,15 @@ logger = logging.getLogger("edit_assist")
 # ---------------------------------------------------------------------------
 
 def _voice_hint(frontmatter: dict | None) -> str:
+    """Prompt suffix carrying the page's authorial-intent keys, if any.
+
+    Case-insensitive: the browser parser preserves the spelling the author
+    typed. stream_assist already wraps its output, but re-wrapping here (cheap,
+    idempotent) keeps the fold from depending on which caller got there first.
+    """
     if not frontmatter:
         return ""
+    frontmatter = CaseInsensitiveDict(frontmatter)
     parts = []
     for key in ("audience", "voice", "tone", "style"):
         v = frontmatter.get(key)
@@ -451,6 +459,10 @@ def _structural_user(label: str, target: str):
 class WritingCommand:
     id: str
     label: str
+    # One line for the "/" menu's detail strip. Editor tools get theirs from
+    # frontmatter (see editor_registry); built-ins carry theirs here so the strip
+    # is never blank on the commands people reach for most.
+    description: str
     range_source: str   # "cursor" | "selection"
     operation: str      # "insert" | "replace"
     # system_prompt + user_template are only used by kind="llm" commands.
@@ -1283,6 +1295,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "continue": WritingCommand(
         id="continue",
         label="Continue Writing",
+        description="Write the next passage from where the caret sits, in the document's voice.",
         range_source="cursor",
         operation="insert",
         system_prompt=_CONTINUE_SYS,
@@ -1292,6 +1305,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "continue_with_sources": WritingCommand(
         id="continue_with_sources",
         label="Continue (grounded in notes)",
+        description="Continue writing, grounded in passages retrieved from your other notes.",
         range_source="cursor",
         operation="insert",
         system_prompt=_CONTINUE_SOURCES_SYS,
@@ -1302,6 +1316,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "rewrite": WritingCommand(
         id="rewrite",
         label="Rewrite Selection",
+        description="Rewrite the selection, keeping its meaning and markdown structure.",
         range_source="selection",
         operation="replace",
         system_prompt=_REWRITE_SYS,
@@ -1311,6 +1326,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "outline_to_prose": WritingCommand(
         id="outline_to_prose",
         label="Outline → Prose",
+        description="Expand a bulleted outline into flowing paragraphs.",
         range_source="selection",
         operation="replace",
         system_prompt=_OUTLINE_TO_PROSE_SYS,
@@ -1320,6 +1336,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "prose_to_outline": WritingCommand(
         id="prose_to_outline",
         label="Prose → Outline",
+        description="Condense paragraphs into a nested bulleted outline.",
         range_source="selection",
         operation="replace",
         system_prompt=_PROSE_TO_OUTLINE_SYS,
@@ -1329,6 +1346,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "tighten": WritingCommand(
         id="tighten",
         label="Tighten",
+        description="Cut the selection down without losing anything it says.",
         range_source="selection",
         operation="replace",
         system_prompt=_TIGHTEN_SYS,
@@ -1338,6 +1356,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "loosen": WritingCommand(
         id="loosen",
         label="Loosen",
+        description="Expand the selection with more explanation and connective tissue.",
         range_source="selection",
         operation="replace",
         system_prompt=_LOOSEN_SYS,
@@ -1347,6 +1366,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "list_to_table": WritingCommand(
         id="list_to_table",
         label="List → Table",
+        description="Turn a list into a markdown table, inferring the columns.",
         range_source="selection",
         operation="replace",
         system_prompt=_LIST_TO_TABLE_SYS,
@@ -1356,6 +1376,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "table_to_list": WritingCommand(
         id="table_to_list",
         label="Table → List",
+        description="Flatten a markdown table back into a list.",
         range_source="selection",
         operation="replace",
         system_prompt=_TABLE_TO_LIST_SYS,
@@ -1365,6 +1386,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "list_to_checklist": WritingCommand(
         id="list_to_checklist",
         label="List → Checklist",
+        description="Add `- [ ]` checkboxes to each item. Pure text edit, no LLM.",
         range_source="selection",
         operation="replace",
         kind="checklist_toggle",
@@ -1374,6 +1396,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "checklist_to_list": WritingCommand(
         id="checklist_to_list",
         label="Checklist → List",
+        description="Strip the checkboxes back to a plain list. Pure text edit, no LLM.",
         range_source="selection",
         operation="replace",
         kind="checklist_toggle",
@@ -1381,6 +1404,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "prose_to_mermaid": WritingCommand(
         id="prose_to_mermaid",
         label="Prose → Mermaid Diagram",
+        description="Draw the described process as a Mermaid diagram.",
         range_source="selection",
         operation="replace",
         system_prompt=_PROSE_TO_MERMAID_SYS,
@@ -1390,6 +1414,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "mermaid_to_prose": WritingCommand(
         id="mermaid_to_prose",
         label="Mermaid → Prose",
+        description="Describe what a Mermaid diagram shows, in prose.",
         range_source="selection",
         operation="replace",
         system_prompt=_MERMAID_TO_PROSE_SYS,
@@ -1399,6 +1424,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "table_to_mermaid": WritingCommand(
         id="table_to_mermaid",
         label="Table → Mermaid Chart",
+        description="Chart the table's numbers as a Mermaid diagram.",
         range_source="selection",
         operation="replace",
         system_prompt=_TABLE_TO_MERMAID_SYS,
@@ -1408,6 +1434,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "autolink": WritingCommand(
         id="autolink",
         label="Auto-link selection",
+        description="Find pages in this vault the selection could link to, and pick from them.",
         range_source="selection",
         operation="replace",
         kind="autolink",
@@ -1417,6 +1444,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "cite_claim": WritingCommand(
         id="cite_claim",
         label="Cite this claim",
+        description="Find notes that support the selected claim and attach one as a footnote.",
         range_source="selection",
         operation="replace",
         kind="cite",
@@ -1428,6 +1456,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "wrap_admonition": WritingCommand(
         id="wrap_admonition",
         label="Wrap as admonition",
+        description="Wrap the selection in an admonition; the type is classified for you.",
         range_source="selection",
         operation="replace",
         kind="admonition",
@@ -1446,6 +1475,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "custom": WritingCommand(
         id="custom",
         label="Prompt",
+        description="Type a one-off instruction; it transforms the selection.",
         range_source="selection",
         operation="replace",
         kind="custom",
@@ -1453,6 +1483,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "custom_replace": WritingCommand(
         id="custom_replace",
         label="Prompt (replace)",
+        description="Type a one-off instruction; it rewrites the whole document.",
         range_source="document",
         operation="replace",
         kind="custom",
@@ -1460,6 +1491,7 @@ COMMANDS: dict[str, WritingCommand] = {
     "custom_insert": WritingCommand(
         id="custom_insert",
         label="Prompt (insert)",
+        description="Type a one-off instruction; the result is inserted at the caret.",
         range_source="cursor",
         operation="insert",
         kind="custom",
@@ -1483,6 +1515,7 @@ def list_commands(vault: str | None = None) -> list[dict]:
         {
             "id": cmd.id,
             "label": cmd.label,
+            "description": cmd.description,
             "range_source": cmd.range_source,
             "operation": cmd.operation,
             "kind": cmd.kind,
@@ -2123,6 +2156,11 @@ async def stream_assist(
     # later turn to keep cheap, so arming unconditionally costs nothing beyond the
     # first-call reprocess it is buying.
     llm_backend.begin_cold_session()
+
+    # Fold key case once, here: the browser parser preserves the spelling the
+    # author typed, and every consumer downstream (voice hints, editor.frontmatter)
+    # should match keys the way the rest of Tzara does.
+    frontmatter = CaseInsensitiveDict(frontmatter or {})
 
     actx = AssistContext(
         before=before,

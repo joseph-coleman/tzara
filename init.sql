@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS document_tags (
     vault_id TEXT NOT NULL,
     doc_id  TEXT NOT NULL,
     tag     TEXT NOT NULL,
-    source  TEXT DEFAULT 'inline',  -- 'pinned', 'auto', or 'inline'
+    source  TEXT DEFAULT 'inline',  -- 'manual' (Tags), 'auto' (AutoTags), or 'inline' (#hashtag)
     PRIMARY KEY (vault_id, doc_id, tag),
     FOREIGN KEY (vault_id, doc_id) REFERENCES documents(vault_id, doc_id) ON DELETE CASCADE ON UPDATE CASCADE
 );

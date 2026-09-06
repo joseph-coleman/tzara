@@ -588,12 +588,10 @@ def chunk(body, title="", max_chunk_size=2000):
     frontmatter = _parse_frontmatter(body)
     body = _strip_frontmatter(body)
 
-    fm_tags = []
-    if "tags" in frontmatter:
-        # Plain split of ALL frontmatter tags for indexing. NOT
-        # WikiDoc.extract_manual_tags (that returns only !-prefixed manual tags)
-        # nor parse_llm_tags (LLM-output parser) - different semantics.
-        fm_tags = [t.strip() for t in frontmatter["tags"].split(",") if t.strip()]
+    # The UNION of Tags (yours) and AutoTags (the LLM's). Ownership is split so
+    # the metadata task cannot clobber your tags; what the tags DO is not split.
+    from src.frontmatter import merged_tags
+    fm_tags = merged_tags(frontmatter)
 
     if not title and "title" in frontmatter:
         title = frontmatter["title"]

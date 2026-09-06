@@ -7,7 +7,8 @@ output: Vault Health.md
 max_iterations: 6
 log: true
 Tags: wiki, orphan-pages, link-proposal, health-report, metadata, tagging
-Summary: The prompt instructs you to run a single vault health report, then, if any orphan pages exist, stage link proposals for up to five of them using the `link_orphans_to_best_match` tool, and finally produce a brief markdown summary of the findings and suggested links. No additional code or commentary should be included—only the markdown report.
+GenerateMetadata: false
+Summary: This agent demonstrates various tools for generate a report on the structural health of your repository of knowledge.
 ---
 
 # Prompt

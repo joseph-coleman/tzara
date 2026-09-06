@@ -2792,7 +2792,7 @@ pre.chat-code-proposal {
     background: var(--bg-color);
     color: var(--fg-color);
     border: 1px solid var(--darker);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
     min-width: 180px;
     max-height: 40vh;
@@ -2802,10 +2802,76 @@ pre.chat-code-proposal {
     padding: 4px 0;
 }
 
+/* The command menu adds a pinned detail strip under a scrolling row list, so
+   the box that scrolls is .slash-menu-list rather than the shell. The
+   autolink/cite pickers use the plain .slash-menu above and are unaffected. */
+.slash-menu--detailed {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding-bottom: 0;
+}
+
+.slash-menu-list {
+    /* position:relative makes this the offsetParent whose coordinates
+       keepRowVisible() measures rows against. */
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    /* The menu is only as wide as its longest label (see .slash-menu-detail), and
+       that width is derived from the row TEXT - a scrollbar appearing inside this
+       box would then take its space out of the rows, so the longest label, the one
+       that set the width, is the first thing to ellipsise. Reserving the gutter
+       always also keeps the width steady as filtering pushes the list over and
+       back under the max-height. */
+    scrollbar-gutter: stable;
+}
+
+/* The strip must not change the menu's size in EITHER axis as the highlight
+   moves, so both are pinned:
+
+   - Height: a fixed four lines, so a one-line built-in and a long editor
+     description reserve the same space.
+   - Width: `width: 0` keeps this text out of the menu's intrinsic width
+     calculation, and `min-width: 100%` then fills whatever width the row list
+     settled on. Without this the menu is as wide as the CURRENT description
+     and visibly resizes on every arrow key and every hover. The menu is
+     therefore sized by its labels, exactly as it was before the strip existed.
+
+   `min-width: 100%` measures the BORDER box, so this rule must stay border-box:
+   under content-box the horizontal padding is added on top of the full menu
+   width and the shell's `overflow: hidden` clips the last ~12px of every line.
+   The height therefore carries the vertical padding explicitly. */
+.slash-menu-detail {
+    flex: 0 0 auto;
+    width: 0;
+    min-width: 100%;
+    box-sizing: border-box;
+    height: calc(5.4em + 13px);   /* 4 lines at 1.35 + 6px padding pair + 1px border */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    overflow: hidden;
+    border-top: 1px solid var(--lighter);
+    padding: 6px 12px;
+    font-size: var(--text-sm);
+    line-height: 1.35;
+    opacity: 0.75;
+}
+
 .slash-menu-item {
     padding: 6px 12px;
     cursor: pointer;
     user-select: none;
+}
+
+/* One line per row is what keeps the list from reflowing under the pointer;
+   the full text is in the detail strip. */
+.slash-menu--detailed .slash-menu-item {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .slash-menu-item.active {

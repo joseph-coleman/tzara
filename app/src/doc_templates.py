@@ -55,5 +55,7 @@ def starter_document(wikidoc, vault: str) -> str:
 
     body = f"""# Header \n Edit your document {file_name}"""
     if INSERT_DEFAULT_TAGS_IN_NEW_DOCUMENT:
-        body = f"---\nTitle: {file_name}\nDate: {_now()}\nTags: \n---\n\n{body}"
+        # Only `Created` is seeded. `Updated` is added by the first save that actually
+        # writes the page, so it never claims an edit that has not happened yet.
+        body = f"---\nTitle: {file_name}\nCreated: {_now()}\nTags: \n---\n\n{body}"
     return body

@@ -26,8 +26,15 @@ from config import (  # DIRECTORY_AS_MD_FILE_LINK,; HIDE_DOT_DIRECTORY,
     vault_abs_root,
     vault_root,
 )
+from src import timefmt
 from src.chunker import normalize_separators, separator_rank, wikilink_key
-from src.vault_registry import vault_default_page
+from src.frontmatter import (
+    METADATA_UPDATED_LABEL,
+    UPDATED_ANCHORS,
+    UPDATED_KEY,
+    UPDATED_LABEL,
+)
+from src.vault_registry import vault_default_page, vault_timestamps_enabled
 
 
 class WikiDoc:
@@ -476,10 +483,18 @@ class WikiDoc:
             # commit()/write_text give the (vault, rel) callers. New files default
             # to LF. Shares the single low-level open via _read_raw/_write_raw.
             eol = "\n"
+            previous = None
             if os.path.isfile(self._file_path):
                 existing = WikiDoc._read_raw(self._file_path)
                 eol = "\r\n" if "\r\n" in existing else "\n"
+                previous = existing.replace("\r\n", "\n")
             lf = updated_content.replace("\r\n", "\n")
+            # Stamp between normalize and re-apply, so the timestamp rides the same
+            # EOL preservation as the rest of the write. relative_file_path() is
+            # markdown-only and returns None otherwise, which is exactly the gate we
+            # want: a .canvas auto-save is JSON, and posts far too often to date-stamp.
+            lf = WikiDoc.stamp_updated(
+                lf, self._vault, self.relative_file_path() or "", previous=previous)
             out = lf.replace("\n", "\r\n") if eol == "\r\n" else lf
             WikiDoc._write_raw(self._file_path, out)
         elif data_type == "binary":
@@ -716,6 +731,9 @@ class WikiDoc:
         eol = pair[1] if pair else "\n"
         existed = pair is not None
         rel_n = WikiDoc._norm_rel(rel)
+        content = WikiDoc.stamp_updated(
+            content.replace("\r\n", "\n"), vault_id, rel_n,
+            previous=pair[0] if pair else None)
 
         # Set the watcher's git:debounce FIRST - before ANY git op, including the
         # checkpoint commit below. A prior write to this file (e.g. its creation)
@@ -981,103 +999,162 @@ class WikiDoc:
             i += 1
         return result
 
+    # ---- frontmatter field mutation -------------------------------------
+    #
+    # ONE find-or-insert loop, four callers. AutoTags/Summary (the metadata task's
+    # fields) and Updated/MetadataUpdated (the timestamps) all want the same thing:
+    # replace a scalar line inside the --- block, or add it if absent. They were two
+    # near-identical copies before the timestamps arrived; a third and fourth copy is
+    # how the copies start disagreeing.
+    #
+    # `Tags:` is deliberately not reachable from here - it is yours, and nothing in
+    # Tzara rewrites it. That split is what lets the frontmatter stay valid YAML (the
+    # old scheme marked your tags with a `!` prefix, which is YAML's tag sigil and
+    # made the whole block unparseable to other tools).
+
     @staticmethod
-    def extract_manual_tags(tags_value: str) -> list[str]:
-        """Split a Tags value string, return only !-prefixed tags."""
-        tags = [t.strip() for t in tags_value.split(",") if t.strip()]
-        return [t for t in tags if t.startswith("!")]
+    def set_frontmatter_field(content: str, label: str, value: str, *,
+                              after: tuple = (), drop_block_list: bool = False) -> str:
+        """Replace (or insert) a scalar `label: value` line in the --- block.
+
+        Returns content UNCHANGED when there is no frontmatter block. That is the
+        documented contract for every writer here - "no block means no writes" - and it
+        is what makes deleting the frontmatter a per-page opt-out from tags, summaries
+        and timestamps alike.
+
+        `label` is the authored spelling for a NEW line; an existing line is matched
+        case-insensitively and keeps its position (not its spelling).
+
+        `after` names keys to insert BELOW when the field is new, in priority order, so
+        `Updated:` lands under `Created:` rather than at the bottom of the block. Falls
+        back to appending.
+
+        `drop_block_list` removes the "  - item" lines that follow the replaced key. A
+        block-list value spills onto them, and without this the replacement scalar would
+        sit above orphaned list entries.
+
+        LF-only by contract (the `---\n` test): callers read via read_text, which
+        normalizes to LF and hands back the file's real EOL to replay on write.
+        """
+        if not content.startswith("---\n"):
+            return content
+
+        close = content.find("\n---", 4)
+        if close == -1:
+            return content
+
+        lines = content[4:close].split("\n")
+        body = content[close + 4:]
+
+        folded = label.strip().lower()
+        idx = None
+        for i, line in enumerate(lines):
+            key = line.partition(":")[0].strip().lower()
+            if key == folded:
+                idx = i
+                break
+
+        if idx is not None:
+            if drop_block_list:
+                end_idx = idx + 1
+                while end_idx < len(lines) and re.match(r"^\s+-\s+(.+)", lines[end_idx]):
+                    end_idx += 1
+                del lines[idx + 1:end_idx]
+            lines[idx] = f"{label}: {value}"
+        else:
+            lines.insert(WikiDoc._insert_position(lines, after), f"{label}: {value}")
+
+        return "---\n" + "\n".join(lines) + "\n---" + body
+
+    @staticmethod
+    def _insert_position(lines: list, after: tuple) -> int:
+        """Index for a new frontmatter line: just below the first key named in `after`,
+        else the end of the block."""
+        for anchor in after:
+            for i, line in enumerate(lines):
+                if line.partition(":")[0].strip().lower() == anchor:
+                    return i + 1
+        return len(lines)
 
     @staticmethod
     def update_tags_in_content(content: str, new_auto_tags: list[str]) -> str:
-        """Parse --- delimited frontmatter, find or insert the Tags: line,
-        preserve !-prefixed manual tags, replace everything else with new_auto_tags.
-        Return content unchanged if no --- frontmatter exists."""
-        if not content.startswith("---\n"):
-            return content
-
-        close = content.find("\n---", 4)
-        if close == -1:
-            return content
-
-        frontmatter = content[4:close]
-        body = content[close + 4 :]
-
-        lines = frontmatter.split("\n")
-        tags_line_idx = None
-        for i, line in enumerate(lines):
-            if line.lower().startswith("tags:"):
-                tags_line_idx = i
-                break
-
-        if tags_line_idx is not None:
-            current_value = lines[tags_line_idx].split(":", 1)[1].strip()
-
-            # Handle YAML inline list: tags: [a, b, c]
-            if current_value.startswith("[") and current_value.endswith("]"):
-                current_value = current_value[1:-1].strip()
-
-            # Handle YAML block list: tags:\n  - a\n  - b
-            elif current_value == "":
-                list_items = []
-                remove_start = tags_line_idx + 1
-                remove_end = remove_start
-                while remove_end < len(lines):
-                    m = re.match(r"^\s+-\s+(.+)", lines[remove_end])
-                    if m:
-                        list_items.append(m.group(1).strip())
-                        remove_end += 1
-                    else:
-                        break
-                if list_items:
-                    current_value = ", ".join(list_items)
-                    del lines[remove_start:remove_end]
-
-            manual_tags = WikiDoc.extract_manual_tags(current_value)
-        else:
-            manual_tags = []
-
-        all_tags = manual_tags + [t for t in new_auto_tags if t not in manual_tags]
-        new_tags_line = "Tags: " + ", ".join(all_tags)
-
-        if tags_line_idx is not None:
-            lines[tags_line_idx] = new_tags_line
-        else:
-            lines.append(new_tags_line)
-
-        new_frontmatter = "---\n" + "\n".join(lines) + "\n---" + body
-        return new_frontmatter
+        """Find or insert the AutoTags: line in frontmatter, replace its value."""
+        return WikiDoc.set_frontmatter_field(
+            content, "AutoTags", ", ".join(new_auto_tags), drop_block_list=True)
 
     @staticmethod
     def update_summary_in_content(content: str, summary: str) -> str:
-        """Find or insert a Summary: line in frontmatter.
-        Return content unchanged if no --- frontmatter exists."""
-        if not content.startswith("---\n"):
+        """Find or insert a Summary: line in frontmatter, collapsed to one line."""
+        return WikiDoc.set_frontmatter_field(
+            content, "Summary", " ".join(summary.split()))
+
+    # ---- timestamps ------------------------------------------------------
+    #
+    # Which writes stamp is decided by WHICH SEAM they go through, not by a flag:
+    # save() and commit() stamp, the write_text() primitive does not. That is not an
+    # accident of layering, it is the policy - the metadata task, the agent-owned
+    # _dada pages and content_ops' link rewriting all bottom out at write_text, and
+    # none of them should move a document's Updated date. A batch move rewriting
+    # [[links]] in forty files is not forty edits.
+
+    @staticmethod
+    def _stamps_wanted(vault_id: str, rel: str) -> bool:
+        """Whether to stamp this write: markdown, in a vault that wants timestamps."""
+        return rel.lower().endswith(".md") and vault_timestamps_enabled(vault_id)
+
+    @staticmethod
+    def _without_key(content: str, key: str) -> str:
+        """`content` with any frontmatter line for `key` removed - the comparison form
+        for the no-op guard, so a re-save differing only in its own stamp is a no-op."""
+        span = WikiDoc._frontmatter_span(content)
+        if span is None:
             return content
+        start, close = span
+        kept = [line for line in content[start:close].split("\n")
+                if line.partition(":")[0].strip().lower() != key]
+        return content[:start] + "\n".join(kept) + content[close:]
 
-        close = content.find("\n---", 4)
-        if close == -1:
+    @staticmethod
+    def stamp_updated(content: str, vault_id: str, rel: str, previous=None) -> str:
+        """Refresh `Updated:` on a content write. LF content in, LF content out.
+
+        `previous` is the document's current on-disk text (LF). When the write changes
+        nothing but the stamp itself, the OLD stamp is carried forward rather than
+        refreshed - otherwise opening and re-saving a page you did not edit would churn
+        the date and, with versioning on, the git history with it. Both call sites have
+        already read the file for EOL detection, so this costs no extra I/O.
+
+        Carrying the old value forward is not the same as returning `content` untouched.
+        A caller that builds its text programmatically (write_gate, chat) need not echo
+        the stamp back, and leaving such a write alone would silently DELETE a stamp the
+        page already had. Preserving is the only idempotent answer.
+        """
+        if not WikiDoc._stamps_wanted(vault_id, rel):
             return content
+        if previous is not None and (WikiDoc._without_key(content, UPDATED_KEY)
+                                     == WikiDoc._without_key(previous, UPDATED_KEY)):
+            carried = WikiDoc.parse_frontmatter(previous).get(UPDATED_KEY)
+            if not carried:
+                return content
+            return WikiDoc.set_frontmatter_field(
+                content, UPDATED_LABEL, carried, after=UPDATED_ANCHORS)
+        return WikiDoc.set_frontmatter_field(
+            content, UPDATED_LABEL, timefmt.iso_local(), after=UPDATED_ANCHORS)
 
-        frontmatter = content[4:close]
-        body = content[close + 4 :]
+    @staticmethod
+    def stamp_metadata_updated(content: str, vault_id: str, rel: str) -> str:
+        """Refresh `MetadataUpdated:` - the metadata task's own stamp, kept separate
+        from `Updated` so a bulk regenerate cannot flatten every page's edit date.
 
-        lines = frontmatter.split("\n")
-        summary_line_idx = None
-        for i, line in enumerate(lines):
-            if line.lower().startswith("summary:"):
-                summary_line_idx = i
-                break
-
-        # Clean summary: collapse to single line
-        clean_summary = " ".join(summary.split())
-        new_summary_line = "Summary: " + clean_summary
-
-        if summary_line_idx is not None:
-            lines[summary_line_idx] = new_summary_line
-        else:
-            lines.append(new_summary_line)
-
-        return "---\n" + "\n".join(lines) + "\n---" + body
+        Call it only once the generated tags/summary have been found to DIFFER: the
+        caller writes and git-commits on `updated != content`, so stamping ahead of that
+        test would make every run rewrite and commit every page.
+        """
+        if not WikiDoc._stamps_wanted(vault_id, rel):
+            return content
+        return WikiDoc.set_frontmatter_field(
+            content, METADATA_UPDATED_LABEL, timefmt.iso_local(),
+            after=(UPDATED_KEY,) + UPDATED_ANCHORS)
 
     @staticmethod
     def strip_frontmatter(content: str) -> str:

@@ -36,6 +36,7 @@ from config import (
     AGENT_OUTPUT_DIR,
     DEFAULT_VAULT,
     DEFAULT_WIKI_PAGE,
+    FRONTMATTER_TIMESTAMPS,
     HOST_HISTORY_LOCATION,
     SYSTEM_VAULT,
     TEMPLATE,
@@ -45,6 +46,7 @@ from config import (
     vault_abs_root,
     vault_git_dir,
 )
+from src.frontmatter import truthy
 
 # Slug rules: lowercase alphanumerics plus - and _, must start alphanumeric. This is
 # deliberately permissive on *meaning* (a vault may be named "edit" or "api" -- the
@@ -282,6 +284,29 @@ def vault_theme(slug: str) -> str:
     exist on disk."""
     name = read_vault_config(slug).get("template")
     return name if isinstance(name, str) and is_template(name) else TEMPLATE
+
+
+# Config key for the timestamp toggle. Absent means "inherit the site default", which is
+# what an empty field means for every other setting in the /vaults panel.
+TIMESTAMPS_KEY = "timestamps"
+
+
+def vault_timestamps_enabled(slug: str) -> bool:
+    """Whether Tzara writes Created:/Updated: into this vault's pages.
+
+    Falls back to the site-wide FRONTMATTER_TIMESTAMPS when the vault sets no
+    ``timestamps`` key.
+
+    The SYSTEM vault never gets stamps. Its pages are seeded help documentation, and
+    scripts/refresh_seed_docs.py pushes updates through WikiDoc.commit -- stamping there
+    would leave every live help page permanently diverged from its repo seed, so that
+    script's dry-run could never come back clean again. Same shape as the system vault's
+    existing refusal of LLM frontmatter (rag_indexer.generate_frontmatter).
+    """
+    if is_system_vault(slug):
+        return False
+    return truthy(read_vault_config(slug).get(TIMESTAMPS_KEY),
+                  default=FRONTMATTER_TIMESTAMPS)
 
 
 # ---------------------------------------------------------------------------

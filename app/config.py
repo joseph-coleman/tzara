@@ -67,6 +67,21 @@ SPACE_CONVERSION_ORDER = ["_", " ", "%20", "+"]
 INSERT_DEFAULT_TAGS_IN_NEW_DOCUMENT = True
 
 #
+# Write Created:/Updated: timestamps into a page's frontmatter.
+#
+# The point is PORTABILITY. Git already knows when a document changed, but the
+# editor's "save version" checkbox is optional, so an edit can deliberately land on
+# disk without a commit -- and a vault copied to a machine with no Tzara and no
+# vault-history/ repo carries no history at all. A stamp in the file survives both.
+#
+# Site-wide DEFAULT only: a vault overrides it with a "timestamps" key in its
+# .tzara/config.json (see vault_registry.vault_timestamps_enabled), which is also
+# what the /vaults settings panel writes.
+#
+FRONTMATTER_TIMESTAMPS = os.environ.get(
+    "FRONTMATTER_TIMESTAMPS", "true").strip().lower() in ("1", "true", "yes", "on")
+
+#
 # Enable file history using a local git repo
 #
 USE_GIT_VERSIONING = True

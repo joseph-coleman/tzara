@@ -9,7 +9,8 @@ mode: propose
 schedule: weekly
 log: true
 Tags: physics, wiki, content-stubs, automated-editing, knowledge-management, ai-assistant
-Summary: The document defines the “Physics Librarian” AI’s workflow: it scans the Physics section for thin or stale pages, selects up to two stubs, drafts concise expansions or new pages with appropriate wikilinks based on existing content, and reports its proposals in a brief markdown summary. All changes are staged for human review, with strict limits on edit types and no invention of unsupported facts.
+GenerateMetadata: false
+Summary: The Physics Librarian workflow: it scans the Physics section of a specific vault, selects up to two stubs, drafts concise expansions or new pages with appropriate wikilinks based on existing content, and reports its proposals in a brief markdown summary. All changes are staged for your review, with strict limits on edit types and no invention of unsupported facts.
 ---
 
 # Prompt

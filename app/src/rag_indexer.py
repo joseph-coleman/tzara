@@ -32,6 +32,7 @@ from config import (
 )
 from src import vault_registry
 from src.chunker import resolve_linkpath, wikilink_key
+from src.frontmatter import metadata_generation_enabled
 from src.task_broker import get_async_redis
 from src.task_tracker import preseed_pending
 from src.wikidoc import WikiDoc
@@ -657,7 +658,7 @@ async def ingest_document(
         vault_id: which vault this document belongs to (partition key)
         force: skip dedup checks (frontmatter:processed key and content hash)
         skip_frontmatter_gen: skip the LLM tag/summary step and go straight to
-            embedding, regardless of the per-doc rag_frontmatter flag. Used by
+            embedding, regardless of the per-doc GenerateMetadata flag. Used by
             the bulk reindex path, which rebuilds the RAG DB only and leaves
             existing frontmatter untouched (LLM metadata is driven separately by
             the "Generate metadata" actions).
@@ -751,18 +752,17 @@ async def ingest_document(
     # RAG path: ensure document row exists, then run the embedding pipeline.
     await asyncio.to_thread(_upsert_document_row, doc_id, title, abs_file, vault_id)
 
-    # Check rag_frontmatter flag (default: generate frontmatter). The caller can
-    # also force-skip generation (bulk reindex = rebuild RAG DB only), and system
+    # Check the GenerateMetadata flag (default: generate frontmatter). The caller
+    # can also force-skip generation (bulk reindex = rebuild RAG DB only), and system
     # vaults ALWAYS skip it (the LLM must never mutate blessed files).
-    rag_frontmatter = frontmatter.get("rag_frontmatter", "true")
     skip_frontmatter = (skip_frontmatter_gen or system_vault
-                        or rag_frontmatter.lower() in ("false", "no", "0"))
+                        or not metadata_generation_enabled(frontmatter))
 
     if skip_frontmatter:
         # Skip LLM generation, go straight to embedding
         reason = ("system vault (frontmatter is human-only)" if system_vault
                   else "reindex (frontmatter decoupled)" if skip_frontmatter_gen
-                  else "rag_frontmatter=false")
+                  else "GenerateMetadata=false")
         logger.info("ingest_document: %s, skipping to embed for %s", reason, doc_id)
         from src.task_definitions import embed_document_task
         task_id = f"embed:{vault_id}:{doc_id}"
@@ -789,7 +789,7 @@ async def generate_frontmatter(file_path: str, vault_id: str = DEFAULT_VAULT) ->
 
     abs_file = _abs_path(file_path, vault_id)
 
-    # Check rag_frontmatter flag
+    # Check the GenerateMetadata flag
     try:
         content = await asyncio.to_thread(_read_file, abs_file)
     except Exception as e:
@@ -797,9 +797,8 @@ async def generate_frontmatter(file_path: str, vault_id: str = DEFAULT_VAULT) ->
         return {"status": "failed", "error": str(e)}
 
     frontmatter = WikiDoc.parse_frontmatter(content)
-    rag_frontmatter = frontmatter.get("rag_frontmatter", "true")
-    if rag_frontmatter.lower() in ("false", "no", "0"):
-        logger.info("generate_frontmatter: rag_frontmatter=false, skipping LLM for %s", doc_id)
+    if not metadata_generation_enabled(frontmatter):
+        logger.info("generate_frontmatter: GenerateMetadata=false, skipping LLM for %s", doc_id)
     else:
         # Delegate to existing implementation
         from src.task_definitions import _generate_metadata_impl
@@ -931,18 +930,20 @@ async def embed_document(file_path: str, vault_id: str = DEFAULT_VAULT) -> dict:
     all_doc_embeds = list(dict.fromkeys(all_doc_embeds))
     all_asset_refs = list(dict.fromkeys(all_asset_refs))
 
-    # Build tags list: !-prefixed = 'pinned', other frontmatter = 'auto', inline = 'inline'
+    # Source label follows the field the tag came from: Tags = 'manual',
+    # AutoTags = 'auto', body #hashtag = 'inline'. Yours wins a collision, so a
+    # tag in both fields is recorded once, as yours.
+    from src.frontmatter import auto_tags, manual_tags
+    _fm = chunk_result.get("frontmatter") or {}
     all_tags = []
-    for tag in fm_tags:
-        if tag.startswith("!"):
-            all_tags.append((tag[1:], "pinned"))
-        else:
-            all_tags.append((tag, "auto"))
-    seen_tags = {t[0] for t in all_tags}
-    for tag in all_inline_tags:
+    seen_tags = set()
+    for tag, source in ([(t, "manual") for t in manual_tags(_fm)]
+                        + [(t, "auto") for t in auto_tags(_fm)]
+                        + [(t, "inline") for t in sorted(all_inline_tags)]):
         clean_tag = tag.lstrip("!")
-        if clean_tag not in seen_tags:
-            all_tags.append((clean_tag, "inline"))
+        if clean_tag and clean_tag not in seen_tags:
+            seen_tags.add(clean_tag)
+            all_tags.append((clean_tag, source))
 
     # Write everything to database
     try:

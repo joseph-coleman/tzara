@@ -1,8 +1,8 @@
 ---
 title: Authoring Agents
-description: Reference for every frontmatter field and section in an agent definition file.
-Tags: agents, yaml-frontmatter, scheduling, capabilities, custom-tools, memory, ledger
-Summary: An agent is a markdown file placed in the system vault whose frontmatter configures its type, description, target vaults, granted capabilities, output location, schedule, triggers, mode (propose or act), and optional features like logging, memory, and custom Python tools; it must include a required “# Prompt” section and may contain optional “# Kickoff”, “# Memory Prompt”, and custom tool definitions. The specification details syntax for schedules, event triggers, cross‑run memory handling, ledger tools, and validation rules ensuring agents are properly named, authorized, and equipped before execution.
+GenerateMetadata: false
+AutoTags: agents, yaml, scheduling, cron, custom-tools, memory, ledgers, capabilities
+Summary: Agents are defined by a markdown file in the system vault containing required frontmatter (type, description, vaults, capabilities, output, etc.) and a mandatory # Prompt section, with optional scheduling, event triggers, mode (propose vs act), memory, logging, and custom Python tools. The configuration grants internal capabilities from a predefined menu, controls how writes are staged or applied, and is validated for proper slug naming, required fields, and tool grants before the agent can run.
 ---
 
 # Overview
@@ -34,7 +34,9 @@ The registry refuses to treat a file as an agent unless it declares `type: agent
 
 ### `description`
 
-A one-line human summary of what the agent does. Shown in management UIs; has no effect on execution.
+A one-line human summary of what the agent does. It appears beside the agent on the [tasks](/manage/tasks) page, and has no effect on execution.
+
+This is yours and the LLM never touches it - unlike `Summary`, which is generated. That is why agent files ship with `GenerateMetadata: false`, and why the starter template writes that line for you. See [frontmatter](frontmatter.md).
 
 ```yaml
 description: Proposes wikilinks between related but unlinked pages.
@@ -47,10 +49,10 @@ description: Proposes wikilinks between related but unlinked pages.
 Which **content vaults** the agent runs against.
 
 - `*` (or omitted) - fan out to **every** non-system vault. The agent runs **once per vault, in isolation**; it does not see a union of all vaults.
-- A comma-separated list - run only against those vaults (names are validated   against existing vaults; unknown names are silently dropped at run time).
+- A comma-separated list - run only against those vaults (names are validated against existing vaults and unknown names are silently dropped at run time).
 
 ```yaml
-vaults: "*"            # every content vault, each in isolation
+vaults: *              # every content vault, each in isolation
 vaults: main, physics  # only these two
 ```
 
@@ -59,13 +61,13 @@ vaults: main, physics  # only these two
 
 ### `capabilities`
 
-A comma-separated list of **internal tools** to grant the agent by name. Each name must exist in the capability menu (see **Capabilities menu** below) or the agent is marked invalid. These tools run server-side against the vault's database and staging layer - they are the *trusted* tool tier.
+A comma-separated list of **internal tools** to grant the agent by name. Each name must exist in the capability menu (see **Capabilities menu** below) or the agent is marked invalid.  Tools are scoped to only have access to the current vault the agent is operating on.
 
 ```yaml
 capabilities: search_wiki, read_document, list_orphans, apply_wikilink
 ```
 
-An agent must grant **at least one** tool - either a `capabilities:` entry or a fenced `python` custom tool (or both). An agent that grants nothing is invalid. Without any tools provided, the agent can not read anythin nor produce any output.
+An agent must grant **at least one** tool - either a `capabilities:` entry or a fenced `python` custom tool (or both). An agent that grants nothing is invalid. Without any tools provided, the agent can not read anything nor produce any output.
 
 ### `output`
 
@@ -77,11 +79,13 @@ The filename of the page the agent writes its final report to. Must be a **plain
 output: Vault Health.md
 ```
 
-Agent-owned output lives under the special `_dada/` directory (configurable via `AGENT_OUTPUT_DIR`) and is excluded from RAG indexing by default - see `index_output` to opt back in. You "take ownership" of an agent's output by moving the file out of that directory.
+Agent-owned output lives under the special `_dada/` directory (configurable via `AGENT_OUTPUT_DIR`) and is excluded from RAG indexing by default - see `index_output` to opt back in. You can "take ownership" of an agent's output by moving the file out of that directory.
 
 ### `max_iterations`
 
-Integer cap on how many reasoning/tool-call steps the agent loop may take before it is forced to wrap up. Omit to use the system default. Lower this to keep cheap agents from looping; raise it for agents that must chain many tool calls.
+*default `10`*
+
+Integer cap on how many reasoning/tool-call steps the agent loop may take before it is forced to wrap up. Omit to use the system default fo 10. Lower this to keep cheap agents from looping; raise it for agents that must chain many tool calls.
 
 ```yaml
 max_iterations: 6
@@ -90,6 +94,9 @@ max_iterations: 6
 ### `schedule`
 
 *default empty (manual only)*
+
+> [!danger] Off by default, opt-in.
+> This feature is controled by enivornment variable `AGENT_SCHEDULER_ENABLED` to be conigured in `.env` or in `config.py`.  Tzara ships with this off by default so you have to opt-in for agents to do things unattended on a schedule.
 
 A **human-readable** rule for when the worker auto-runs the agent. An empty value (the default) means the agent only runs when invoked manually. The presence of a `schedule:` is what flips an agent from manual to automatic.
 
@@ -139,6 +146,9 @@ schedule: 2nd saturday @ 7 am
 
 *default empty*
 
+> [!danger] Off by default, opt-in.
+> This feature is controled by enivornment variable `EVENT_TRIGGERS_ENABLED` to be conigured in `.env` or in `config.py`.  Tzara ships with this off by default so you have to opt-in for agents to be triggered by events.
+
 **Event triggers**: a human-readable rule for firing the agent off application events, dispatched on the same worker tick as schedules. `schedule:` and `on:` compose as OR - either (or both) makes the agent automatic. Event-triggered runs respect the agent's own `mode:`.
 
 Clauses are comma-separated and case-insensitive (`when`, `a`, `an`, `the` are optional filler):
@@ -155,7 +165,7 @@ Folder prefixes with spaces are double-quoted: `uploads in "My Folder/"`. Prefix
 
 The triggering events are described to the agent in its kickoff message and recorded in the run log's *Triggered by* section.
 
-**Loop guards** (see the *Recent events* panel on [/agents](/agents)): an agent never matches events about itself; chained triggers stop at `EVENT_MAX_DEPTH` (default 3); after an event fire the agent cools down (`EVENT_COOLDOWN_S`, default 10 min) and is budgeted per hour (`EVENT_BUDGET_PER_HOUR`, default 6) - deferred events wait in a pool rather than being dropped, and stale ones are discarded after `EVENT_MAX_AGE_S`. Two agents whose `on:` rules name each other's runs form a cycle and are refused at load time.
+**Loop guards** (see the *Recent events* panel on [/agents](/agents)): an agent never matches events about itself; chained triggers stop at `EVENT_MAX_DEPTH` (default 3); after an event fire the agent cools down (`EVENT_COOLDOWN_S`, default 600 seconds which is 10 min) and is budgeted per hour (`EVENT_BUDGET_PER_HOUR`, default 6) - deferred events wait in a pool rather than being dropped, and stale ones are discarded after `EVENT_MAX_AGE_S`, default 86400 which is 24 hours. Two agents whose `on:` rules name each other's runs form a cycle and are refused at load time.
 
 ```yaml
 on: any agent failed, uploads in inbox/
@@ -167,8 +177,8 @@ on: any agent failed, uploads in inbox/
 
 The agent's **autonomy ceiling** - what happens to the writes its tools make.
 
-- `propose` (default) - every write is **staged** as a shadow copy for you to review and approve in the `/agents` inbox. Nothing touches real pages until you approve.
-- `act-with-checkpoint` (accepts the alias `act`) - writes are **applied immediately**, each preceded by a checkpoint commit so any change is recoverable. Grant this only to agents you trust.
+- `propose` (default) - every write is **staged** as a shadow copy for you to review and approve in the [/agents](/agents) inbox. Your pages are not touched until you approve the changes, which you can review.
+- `act-with-checkpoint` (accepts the alias `act`) - writes are **applied immediately**, each preceded by a checkpoint commit so any change is recoverable. Grant this only to agents you trust. 
 
 There is no un-checkpointed "act" mode; `act` and `act-with-checkpoint` mean the same thing.
 
@@ -176,6 +186,8 @@ There is no un-checkpointed "act" mode; `act` and `act-with-checkpoint` mean the
 mode: propose
 mode: act              # alias for act-with-checkpoint
 ```
+
+Of course, this assumes you have versioning enabled, which is on by default.  You would have had to opt-out of document versioning for no checkpoints.
 
 ### `index_output`
 
@@ -214,9 +226,9 @@ Accepts truthy strings: `1`, `true`, or `yes` (case-insensitive).
 memory: true
 ```
 
-`memory` is independent of `log` - memory is the agent's private working note; `log` is a human-facing audit trail. Turning one on does not turn on the other.
+Note, `memory` is independent of `log`: memory is the agent's private working note; `log` is a human-facing audit trail. Turning one on does not turn on the other.
 
-To shape *what* the agent records, write a [`# Memory Prompt`](#memory-prompt) section.  When creating a new agent, a commented example is provided.  See [`# Cross-run memory`](#cross-run-memory) for further details on how this works.
+To shape *what* the agent records, write a [`# Memory Prompt`](#memory-prompt) section.  When creating a new agent, a commented example is provided.  See [`# Cross-run memory`](#cross-run-memory) for further details on how this works.  
 
 ---
 
@@ -237,9 +249,11 @@ The standing directive - the agent's system-prompt-style instructions. This is w
 
 *optional, only used with `memory: true`*
 
-The instruction the consolidation turn runs on. Omit it - the usual case - and the agent uses the shared default, which means it also picks up any later improvement to that default. Write one to take ownership of the wording instead.
+When memory is enabled, there are two extra memory consolidation steps after an agent has exhausted iterations or finished its task.  This consolidation steps have the singular purpose of crafting a memory for use the next time the agent runs.
 
-New agent files ship the default in this section, fenced in `%%` so it reads as a comment and the shared default stays in force. Unfence and edit to make it yours.
+The instruction you write in the `# Memory Prompt` section is only on used on the memory consolidation turn. You can omit this, perhaps the usual and prefered case, and the agent uses the shared default, which means it also picks up any later improvement to that default. Write instructions here when you really need to take control.  See the agents `expanse-worldbuilder` and `expanse-continuity-linker` as detailed examples of this feature.
+
+When you create a new agent, the default prompt is shown for reference. It is fenced in a `%%` block, which means it is a comment and so the shared default stays active. Unfence or uncomment to tweak behavior. 
 
 Placeholders `{agent_name}` and `{tool_names}` are filled in for you; any other braces are left alone, so JSON or LaTeX in your prompt is safe.
 
@@ -262,13 +276,13 @@ Assess the vault's health and propose links for up to 5 orphan pages, then write
 
 *fenced ` ```python ` blocks*
 
-Any fenced `python` (or `py`) block defines **human-authored custom tools** - first-class functions the agent may call by name, alongside its granted capabilities. Their schemas are derived **statically** (via AST parsing - the code is never executed to build the schema); the code only ever runs inside the isolated **agent kernel**, which has no vault mount and reaches data through the thin `wiki` proxy.
+Any fenced `python` block defines **human-authored custom tools** - first-class functions the agent may call by name, alongside its granted capabilities. Their schemas are derived **statically** (via AST parsing - the code is never executed to build the schema); the code only ever runs inside the isolated **agent kernel**, which has no vault mount and reaches data through the thin `wiki` proxy.
 
 Guidelines:
 
-- Each top-level `def` becomes one tool. Give it **type hints** and a **docstring** - both feed the schema the model sees. Default values become optional parameters.
+- Each top-level `def` becomes one tool. Give it **type hints** and a **docstring** - both feed the schema the model sees. Default values become optional parameters. Any `def` name that starts with an underscore, `_`, is skipped as a top level tool.  They're still available to be called from within the agent kernel.
 - A custom tool's name must **not collide** with a granted internal capability.
-- Inside the function, use the injected `wiki` object for data access, e.g. `wiki.queryDocuments()`, `wiki.queryEdges()`, `wiki.search(q, top_k=3)`, `wiki.read(doc_id)`, `wiki.write(doc_id, body, note=...)`, `wiki.list_orphans()`. Writes still funnel through the same write gate, so `mode` governs them exactly as it governs capability writes. See [the wiki object](wiki-object.md) for the full method reference of both `wiki` objects.
+- Inside the function, use the injected `wiki` object for data access, e.g. `wiki.queryDocuments()`, `wiki.queryEdges()`, `wiki.search(q, top_k=3)`, `wiki.read(doc_id)`, `wiki.write(doc_id, body, note=...)`, `wiki.list_orphans()`. Writes still funnel through the same write gate, so `mode` governs them exactly as it governs capability writes. See [the wiki object](wiki-object.md) for the full method reference of both `wiki` objects.  Yes, there are two.
 - Small models sometimes mangle argument *shape* - passing the string `'[3]'` or the list `[3]` where you asked for an `int`. To recover the intended value without writing your own parsing, wrap incoming args with `wiki.as_int(v)` / `wiki.as_float(v)` / `wiki.as_str(v)`. Each takes an optional `dict.get`-style fallback used when nothing parses, e.g. `n = wiki.as_int(first_number, 7)` (without one, `as_int`/`as_float` return `None`). The fallback keys on *unparseable*, not falsiness, so a genuine `0` is kept rather than replaced.
 
 ```python
@@ -278,6 +292,10 @@ def vault_health_report() -> str:
     docs = pd.DataFrame(wiki.queryDocuments())
     orphans = pd.DataFrame(wiki.list_orphans())
     return f"Pages: {len(docs)}  Orphans: {len(orphans)}"
+
+def _hidden_function() -> str:
+    """This function starts with an underscore, so is skipped as a tool"""
+    return "still exists in the kernel"
 ```
 
 ---
@@ -289,7 +307,7 @@ By default an agent is **stateless between runs** - every scheduled or event-tri
 ### How it works
 
 - **Storage.** The note lives at `{vault}/_dada/{slug}/memory.md` (filename configurable via `AGENT_MEMORY_FILE`). Like agent output it sits in the RAG-excluded, agent-owned area and is git-committed each run. It is **separate from the output page**: output is the human-facing report; memory is the agent's private working state. A sibling `ledgers.md` holds the append-only half (see **Ledgers** below).
-- **Injection.** At the start of each run the note is injected into the agent's system prompt (head-capped at `AGENT_MEMORY_INJECT_CHARS`, default 6000, keeping the highest-priority sections). The agent is told this is its own memory from previous runs and to start from it.
+- **Injection.** At the start of each run the memory note is injected into the agent's system prompt (head-capped at `AGENT_MEMORY_INJECT_CHARS`, default 6000, keeping the highest-priority sections). The agent is told this is its own memory from previous runs and to start from it.
 - **Consolidation (the reserved turns).** When the working loop ends, the agent spends **two model calls above `max_iterations`**: the first rewrites `memory.md`, the second records to ledgers. Because they are reserved, step-exhaustion can never starve them: memory advances on **every run that actually ran** - a natural finish, `max_iterations` exhaustion, or a timeout alike. Only a hard error or a cancel skips it. They are split because a model asked for prose *and* tool calls in one turn reliably returns one or the other, not both.
 - **No-clobber safety.** If the consolidation call comes back empty (e.g. a very long transcript overflowed the summarizer), the previous memory is **preserved**, never overwritten with nothing. The two writes are independent: a run whose note failed to generate still records its ledger rows.
 

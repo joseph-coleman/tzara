@@ -857,12 +857,13 @@
     }
 
     // Scroll `container` the minimum amount needed to bring `row` fully into
-    // view. The menu is capped at max-height (see .slash-menu in tzara.css) and
-    // scrolls internally, so arrow-key navigation past the fold would otherwise
-    // move an invisible highlight and force the user onto the mouse. Done by
-    // hand rather than row.scrollIntoView({ block: "nearest" }): the menu is a
-    // CM tooltip mounted inside the editor's scroller, and scrollIntoView walks
-    // every scrollable ancestor, which jogs the document under the caret.
+    // view. The row list is capped at max-height (see .slash-menu-list in
+    // tzara.css) and scrolls internally, so arrow-key navigation past the fold
+    // would otherwise move an invisible highlight and force the user onto the
+    // mouse. Done by hand rather than row.scrollIntoView({ block: "nearest" }):
+    // the menu is a CM tooltip mounted inside the editor's scroller, and
+    // scrollIntoView walks every scrollable ancestor, which jogs the document
+    // under the caret.
     function keepRowVisible(container, row) {
       // Zero height means the menu hasn't been mounted by the tooltip manager
       // yet (first render happens before the dispatch); nothing can overflow.
@@ -1026,7 +1027,7 @@
       _buildMenu({ mode, anchorPos, slashStart }) {
         const view = this.view;
         const el = document.createElement("div");
-        el.className = "slash-menu";
+        el.className = "slash-menu slash-menu--detailed";
 
         const onKey = (e) => {
           if (e.key === "Escape") {
@@ -1135,6 +1136,21 @@
           m.el.appendChild(empty);
           return;
         }
+        // Rows get their own scroll container so the detail strip below stays
+        // pinned. The strip explains the highlighted row, so one that scrolled
+        // away with the list would be missing exactly when the list is long.
+        const list = document.createElement("div");
+        list.className = "slash-menu-list";
+        // Rows stay one line each and the description wraps down here instead,
+        // where a long one cannot push the items around or resize the menu.
+        // A `title=` tooltip used to carry this and went unread - nothing
+        // signals it is there, and the built-in commands never had one at all.
+        const detail = document.createElement("div");
+        detail.className = "slash-menu-detail";
+        const setDetail = (item) => {
+          detail.textContent = (item && item.description) || "";
+        };
+
         let activeRow = null;
         items.forEach((item, i) => {
           const enabled = this.isEnabled(item);
@@ -1144,15 +1160,21 @@
             + (active ? " active" : "")
             + (enabled ? "" : " disabled");
           row.textContent = item.label;
-          if (item.description) row.title = item.description;
           row.addEventListener("mousedown", e => {
             e.preventDefault();
             if (enabled) this.choose(item);
           });
-          m.el.appendChild(row);
+          // Preview on hover WITHOUT moving m.idx: re-rendering on mouse move
+          // would rebuild the list under the pointer.
+          row.addEventListener("mouseenter", () => setDetail(item));
+          list.appendChild(row);
           if (active) activeRow = row;
         });
-        if (activeRow) keepRowVisible(m.el, activeRow);
+        m.el.appendChild(list);
+        m.el.appendChild(detail);
+        setDetail(items[m.idx]);
+        list.addEventListener("mouseleave", () => setDetail(items[m.idx]));
+        if (activeRow) keepRowVisible(list, activeRow);
       }
 
       // Drop listeners + local state without touching the editor. Safe to call

@@ -12,6 +12,7 @@ log: true
 memory: true
 Tags: expanse, worldbuilding, tabletop-rpg, wiki, campaign, automation, knowledge-management
 Summary: The Expanse Worldbuilder autonomously expands a tabletop RPG campaign wiki by creating at most two new pages and expanding one existing stub each run, following a prioritized workflow that first establishes hub pages, then adds detail while using specific tools for edits and interlinking sparingly. All actions are recorded in fixed ledgers and a concise markdown log, and a brief memory note guides the next session.
+GenerateMetadata: false
 ---
 
 # Prompt
@@ -23,7 +24,7 @@ Work in SMALL, focused batches so each run stays coherent and reviewable: per ru
 Process each run:
 1. FIRST, review your memory: your notes from previous runs - your plan, decisions, and any unfinished work - are provided above under "Cross-run memory". If there is none, this is your first run - that is fine. Then read_document the page `Main` - it is the campaign hub and defines the intended structure. Note which hub pages it links to: Characters, Story Lines, Background Info, World Map, Rules and Mechanics.
 2. `list_documents` to see what pages already exist, and `list_stale_stubs` to find thin pages that want expanding. This is how you avoid redoing work — build on what is already there, and check your ledgers for what you have already treated, and prefer whatever your last "Next run" note pointed you toward.
-3. Choose this run's work using this priority order:
+3. Choose this run's work using this priority order. Whatever you pick, every run must CREATE a page or add real new CONTENT to one — new prose a Game Master could read and use. Fixing a heading, merging a duplicate section, or reformatting a list is NOT an expansion and must never be the only thing a run does. Do the substantive writing FIRST; tidy only with the steps you have left over.
    a. If any of the five hub pages named in Main does NOT yet exist, create it FIRST as a landing/index page: a short intro paragraph, then a bulleted list of `[[wikilinks]]` to the detail pages that should live under it (Characters -> crew, NPCs, factions; World Map -> stations, ships, planets; Story Lines -> campaign arcs and session hooks; etc.). It is fine for those linked detail pages not to exist yet — the links seed the next runs' work.
    b. Otherwise, pick ONE hub area and either create the next missing detail page it points to, OR expand a stub. Before writing about an existing topic, `search_wiki` and `read_document` the related pages so your new content stays consistent with what the vault already says.
 4. Expanding an EXISTING page — edit the part you are changing, not the whole page:
@@ -42,7 +43,7 @@ Process each run:
 7. RECORD what you finished, in a ledger. Your memory note is rewritten every run and cannot carry a growing list; a ledger can, and is merged for you so nothing falls off it.
    - The moment you finish a page, call `remember` with the ledger for the KIND of work — `Pages created` for a new page, `Pages expanded` for one you grew. Add the bare page title, matching the rows already there. Record as you go, not at the end: a run that stops early still keeps what it did.
    - You keep a FIXED set of ledgers: `Pages created`, `Pages expanded`, `Documentation updates`, and `Station compliance passes`. Use those exact names and no others — never a variant like `Location pages created`, `Pages expanded Significance` or `Significance sections added`. A new name records no new fact: it splits one record across lists that then disagree, and you may hold only 10 ledgers in total.
-   - When you apply a convention of your OWN devising across many pages (a page template, a house section order), record it on `Station compliance passes`. Your tools can tell you a page exists; they cannot tell you that you already brought it into line — so that is precisely the fact you must record yourself, or you will cycle over the same pages forever.
+   - A convention of your OWN devising (a page template, a house section order) applies to pages you write FROM NOW ON. Do NOT sweep it backwards across pages that already exist. Normalizing the formatting of old pages is not worldbuilding, it is unbounded — every page you look at will have something you could tidy — and it will eat every run you have. If you genuinely do bring an old page into line as part of expanding it, record that on `Station compliance passes`: your tools can tell you a page exists but not that you already treated it, so without the row you will revisit it forever.
    - Read your ledgers BEFORE choosing this run's work, and never redo a row already on one.
    - Call `forget` on a ledger whose work is finished, so it stops taking up your attention.
 

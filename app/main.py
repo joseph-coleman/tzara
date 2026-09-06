@@ -49,6 +49,7 @@ from config import (
     DEFAULT_VAULT,
     DEFAULT_WIKI_PAGE,
     DIRECTORY_AS_MD_FILE_LINK,
+    FRONTMATTER_TIMESTAMPS,
     HIDE_DOT_DIRECTORY,
     INDEX_DOCUMENT_FRONTMATTER_DEFAULT,
     LLM_HAS_NATIVE_MOUNT,
@@ -76,6 +77,8 @@ from config import (
 
 
 from src.doc_templates import starter_document
+
+from src.frontmatter import merged_tags
 from src.doctransform import MarkdownDocTransform
 from src.docversioning import MarkdownGitVersioning
 from src.jupyter_client import jupyter_manager, format_execution_message
@@ -615,12 +618,10 @@ async def view_document(request: Request):
         if fm_title:
             doc_data["title"] = fm_title
 
-        raw_tags = meta.get("tags", [])
-        if isinstance(raw_tags, str):
-            tag_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
-        else:
-            tag_list = [t.strip() for t in raw_tags if t.strip()]
-        doc_data["tags"] = [t.lstrip("!") for t in tag_list]
+        # Sidebar shows the union of Tags and AutoTags (merged_tags handles both
+        # the string and list shapes the two parsers produce, and strips the
+        # legacy `!` pin marker).
+        doc_data["tags"] = merged_tags(meta)
         doc_data["summary"] = meta.get("summary", "").strip()
 
         doc_data["scripts"] = ""
@@ -2723,7 +2724,7 @@ async def manage_tasks(request: Request):
                         _links.append(f"[ledgers](/wiki/{_t}/{_owner}/ledgers)")
                     _parts.append(f"{_t}: " + " &bull; ".join(_links))
                 _mem = " - ".join(_parts)
-            raw_markdown += f"| {_def_link} | {_a.description} | {_runs} | {_mem} |\n"
+            raw_markdown += f"| {_def_link} | {_md_esc(_a.description)} | {_runs} | {_mem} |\n"
 
     # --- In-progress jobs ---
     in_progress_tasks = await task_tracker.get_in_progress()
@@ -3180,6 +3181,20 @@ _EDITORS_STATIC = """
 <style>
     .drift-badge { color: var(--color-danger); font-weight: bold; }
     .editor-ok { color: var(--color-success); font-weight: bold; }
+    /* Secondary lines: the description under the editor name, the persistence
+       flags under the validity badge. Both ride inside an existing cell so the
+       table keeps its column count. */
+    .editor-desc, .editor-flags {
+        display: block;
+        font-size: var(--text-smd);
+        font-weight: normal;
+    }
+    /* Fill the content column and hand most of the slack to the name cell, which
+       now carries the description. A min-width in em would instead push the whole
+       table past the page on a narrower window. */
+    table { width: 100%; }
+    table td:first-child, table th:first-child { width: 40%; }
+    .editor-ok, .drift-badge, .editor-flags { white-space: nowrap; }
 </style>
 """
 
@@ -3242,24 +3257,27 @@ async def editors_page(request: Request):
     if not defs:
         lines.append("*No files in the editors folder yet.*")
     else:
-        lines.append("| Editor | Scope | Operation | Tools | Memory | Log | Vaults | Status |")
-        lines.append("|---|---|---|---|---|---|---|---|")
+        # Six columns, not eight: `Status` was a constant "valid" on every healthy
+        # row, and Memory/Log were two more ternaries beside it. Folding all three
+        # into one cell leaves room for the description without the table running
+        # past the content column, and makes the abnormal rows the ones that stand out.
+        lines.append("| Editor | Scope | Operation | Tools | Vaults | Status |")
+        lines.append("|---|---|---|---|---|---|")
         footnotes = []
         for d in defs:
             link = f"[{_md_esc(d.label or d.slug)}](/wiki/{SYSTEM_VAULT}/editors/{d.slug})"
-            #clean_description = _md_esc(d.description) if d.description else ""
+            # The description rides under the name in the same cell. It was a `title=`
+            # tooltip, which is unreachable in practice - nothing signals it is there.
             if d.description:
-                clean_description = _md_esc(d.description)
-                clean_description = clean_description.replace('"', "&quot;")
-                link += f'{{: title="{clean_description}"}}'
+                link += f'<br><span class="editor-desc">{_md_esc(d.description)}</span>'
             if not d.is_editor:
-                lines.append(f"| {link} | | | | | | | "
+                lines.append(f"| {link} | | | | | "
                              f"*not an editor - no `type: editor`* |")
                 continue
             if not d.valid:
                 fn = f"e-{d.slug}"
                 footnotes.append(f"[^{fn}]: {_md_esc('; '.join(d.errors))}")
-                lines.append(f"| {link} | | | | | | | "
+                lines.append(f"| {link} | | | | | "
                              f"**⚠ invalid**{{: .drift-badge }}[^{fn}] |")
                 continue
             # Valid: the derived custom-tool names ARE the proof the Python parsed.
@@ -3270,30 +3288,28 @@ async def editors_page(request: Request):
                 tools.append("`" + ", ".join(t["name"] + "()" for t in d.custom_tools) + "`")
             tools_cell = " &bull; ".join(tools) if tools else "–"
             op_cell = f"note → `{d.output}`" if d.operation == "note" else d.operation
-            mem_cell = "✓" if d.memory else "–"
-            # Mark an overridden consolidation prompt without reproducing it - a
-            # custom `# Memory Prompt` is a whole prompt, not a one-line hint.
-            if d.memory and d.memory_prompt:
-                fn = f"m-{d.slug}"
-                footnotes.append(f"[^{fn}]: custom `# Memory Prompt`")
-                mem_cell += f"[^{fn}]"
             vaults_cell = "all" if d.vaults == ["*"] else _md_esc(", ".join(d.vaults))
+            # Persistence reads as flags under the validity badge - absent means off,
+            # so the common case (a tool that keeps nothing) stays a single word.
+            flags = []
+            if d.memory:
+                flag = "mem"
+                # Mark an overridden consolidation prompt without reproducing it - a
+                # custom `# Memory Prompt` is a whole prompt, not a one-line hint.
+                if d.memory_prompt:
+                    fn = f"m-{d.slug}"
+                    footnotes.append(f"[^{fn}]: custom `# Memory Prompt`")
+                    flag += f"[^{fn}]"
+                flags.append(flag)
+            if d.log:
+                flags.append("log")
+            status_cell = "**✓ valid**{: .editor-ok }"
+            if flags:
+                status_cell += ('<br><span class="editor-flags">'
+                                + " &bull; ".join(flags) + "</span>")
             lines.append(
-                f"| {link} |"
-                # f"| {link} - {clean_description} {{: colspan=8 }} |"
-                # "** {: style='display:none;'} |"
-                # "** {: style='display:none;'} |"
-                # "** {: style='display:none;'} |"
-                # "** {: style='display:none;'} |"
-                # "** {: style='display:none;'} |"
-                # "** {: style='display:none;'} |"
-                # "** {: style='display:none;'} |"
-            # )
-            # lines.append(
-                f"{d.scope} | {op_cell} | {tools_cell} | {mem_cell} | "
-                # f"| &#8203; | {d.scope} | {op_cell} | {tools_cell} | {mem_cell} | "
-                f"{'✓' if d.log else '–'} | {vaults_cell} | "
-                f"**✓ valid**{{: .editor-ok }} |")
+                f"| {link} | {d.scope} | {op_cell} | {tools_cell} | "
+                f"{vaults_cell} | {status_cell} |")
         if footnotes:
             lines += ["", *footnotes]
 
@@ -4280,6 +4296,7 @@ def _vault_settings_panel(v: dict, open_slug: str | None = None) -> str:
         f'<div class="vault-field"><label for="template-{escape(vid)}">Theme</label>'
         f'<select id="template-{escape(vid)}" name="template">'
         f'<option value="">(site default: {escape(TEMPLATE)})</option>{themes}</select></div>',
+        _vault_timestamps_field(vid, cfg.get("timestamps")),
     ]
     for key, label in (("base", "Accent"), ("background", "Surface"),
                        ("foreground", "Ink"), ("link", "Links")):
@@ -4305,6 +4322,30 @@ def _vault_settings_panel(v: dict, open_slug: str | None = None) -> str:
         f'<button type="submit">Save</button>'
         f'<span class="vault-hint">Clear a field to fall back to the site default.</span>'
         f'</div></form></details>'
+    )
+
+
+def _vault_timestamps_field(vid: str, value) -> str:
+    """Tri-state control for the Created:/Updated: toggle.
+
+    A checkbox cannot express this. set_vault_settings reads None as "delete the key",
+    and an unchecked box is simply ABSENT from the POST, so off and inherit would be the
+    same submission. The theme picker already solved that with a select whose empty
+    option names the site default; this mirrors it, so "clear a field to fall back to
+    the site default" stays true of every control on the panel.
+    """
+    current = "" if value is None else ("on" if value else "off")
+    options = "".join(
+        f'<option value="{v}"{" selected" if current == v else ""}>{label}</option>'
+        for v, label in (("on", "on"), ("off", "off"))
+    )
+    site = "on" if FRONTMATTER_TIMESTAMPS else "off"
+    return (
+        f'<div class="vault-field">'
+        f'<label for="timestamps-{escape(vid)}">Timestamps</label>'
+        f'<select id="timestamps-{escape(vid)}" name="timestamps">'
+        f'<option value="">(site default: {site})</option>{options}</select>'
+        f'<span class="vault-hint">write Created:/Updated: into saved pages</span></div>'
     )
 
 
@@ -4374,6 +4415,11 @@ async def _vaults_update(form) -> RedirectResponse:
     if template and not is_template(template):
         return fail(f"No such theme: {template}")
     changes["template"] = template or None
+
+    timestamps = str(form.get("timestamps", "")).strip().lower()
+    if timestamps and timestamps not in ("on", "off"):
+        return fail(f"Not a usable timestamps setting: {timestamps}")
+    changes["timestamps"] = (timestamps == "on") if timestamps else None
 
     colors: dict = {}
     for key in vault_registry.VAULT_COLOR_TOKENS:

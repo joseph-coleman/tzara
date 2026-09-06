@@ -1,6 +1,6 @@
 ---
 type: editor
-label: Equation To Latex
+label: Equation To LaTeX
 description: Convert a selected equation (python or not) and output LaTeX.
 scope: selection
 operation: replace
@@ -8,9 +8,9 @@ vaults: main
 max_iterations: 4
 log: true
 Title: Equation To Latex
-Date: 2026-07-30 13:21:55.591883+00:00
 Tags: latex, sympy, equation-parsing, python, expression-conversion, parsing, tool
-Summary: The user asks to invoke the `equation_to_latex` tool on the currently selected text and return only its exact LaTeX output, without any preamble, commentary, or formatting.
+GenerateMetadata: false
+Summary: This Editor example, Equation To LaTeX, shows multiple functions can be defined, and those starting with an underscore are invisible to the LLM, but are still accessible to the rest of the code. You can write things like y = m x + b and then use this to generate typographically elegant LaTeX. 
 ---
 
 # Prompt

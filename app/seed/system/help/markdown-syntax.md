@@ -149,6 +149,8 @@ tags: [reference, project]
 ---
 ```
 
+A few of these keys change real behavior - keeping a page out of search, pinning tags the LLM isn't allowed to overwrite, setting the voice the editor tools write in. See [frontmatter](frontmatter.md) for the full list.
+
 ## Task lists
 
 ```markdown

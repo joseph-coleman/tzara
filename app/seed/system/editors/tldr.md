@@ -6,7 +6,8 @@ scope: document
 operation: prepend
 Tags: prompt, summarization
 Title: TL;DR
-Summary: The prompt directs the writer to create a TL;DR blockquote of no more than two sentences that captures the document's purpose and main point, using its own terminology and avoiding self‑referential phrases. It also requires that the output consist solely of the blockquote with no additional preamble, commentary, or code fences.
+GenerateMetadata: false
+Summary: Too long, didn't read.
 ---
 
 # Prompt

@@ -11,6 +11,7 @@ extend them, or delete the ones you don't need.
 1. [configurations](help/configurations.md) - How (and where) to configure things.
 1. [basics](help/basics.md) - The basics of using Tzara. 
 1. [markdown-syntax](help/markdown-syntax.md) - The markdown you'll use every day, shown by example.
+1. [frontmatter](help/frontmatter.md) - The metadata block at the top of a page, and what Tzara does with it.
 1. [jupyter](help/jupyter.md) - Jupyter integration details and examples.
 1. [agents](help/agents.md) - Creating agents and how they work
 1. [editors](help/editors.md) - Custom "/" menu commands that transform text as you edit

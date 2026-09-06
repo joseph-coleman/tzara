@@ -1,19 +1,21 @@
 ---
 title: Authoring Editor Tools
-description: Reference for every frontmatter field and section in an editor-tool definition file.
-Tags: editor-tools, markdown, llm, custom-python, memory, capabilities
-Summary: Editor tools are markdown files stored in the system vault that add commands to the edit‑mode “/” menu, letting you run an LLM on a selection, the whole document, or the caret context and replace, prepend, append, insert, or note the result. They are defined by required frontmatter (type, label, description, scope, operation, etc.), a mandatory # Prompt, optional # Memory Prompt, and optional fenced Python blocks for custom functions, with limited capabilities, optional cross‑invocation memory, and logging.
+GenerateMetadata: false
+Tags: editor tools, markdown, llm, metadata, python, memory, capabilities, reference, frontmatter
+Summary: Reference for every frontmatter field and section in an editor tool definition file. Editor tools are markdown files stored in the system vault that add commands to the edit‑mode "/" menu, letting you run an LLM on a selection, the whole document, or the caret context and replace, prepend, append, insert, or note the result. They are defined by required frontmatter (type, label, description, scope, operation, etc.), a mandatory # Prompt, optional # Memory Prompt, and optional fenced Python blocks for custom functions, optional cross‑invocation memory, and logging.
 ---
 
 # Overview
 
-An **editor tool** is a single markdown file you place in the **system vault** under `editors/{slug}.md`. Like an agent, its *location is its blessing*: only a human can put a file in the system vault, so the file existing here IS the trust grant that lets it run.
+![screenshot-slash-menu.png](screenshot-slash-menu.png){: style="float:right;border:3px double var(--base-color);padding:1em;"}
 
-An editor tool adds a custom command to the **edit-mode "/" menu**. While editing any page, type `/`, pick your tool, and it runs an LLM over your selection, the whole document, or the text around your caret, then either transforms the text in place or files an external note.
+An **editor** tool is a single markdown file you place in the **system vault** under `editors/{slug}.md`. Like an agent, its *location is its blessing*: only a human can put a file in the system vault, so the file existing here is the trust grant that lets it run.
+
+An editor tool adds a custom command to the **edit-mode "/" menu**. While editing any page, type `/` (or `Ctrl + Shift + /`), pick your tool, and it runs an LLM over your selection, the whole document, or the text around your caret, then either transforms the text in place or files an external note. 
 
 An editor file has up to three parts:
 
-1. **Frontmatter** - the YAML-style block between `---` fences (all fields below).
+1. **Frontmatter** - the YAML-style block between `---` fences (required, all fields below).
 2. **`# Prompt`** section (required) - the directive the model follows.
 3. Optional fenced ` ```python ` blocks that define custom tools.
 
@@ -21,6 +23,7 @@ The filename (minus `.md`) is the tool's **slug**: lowercase letters, digits, `-
 
 *[LLM]: Large Language Model
 *[AST]: Abstract Syntax Tree
+*[YAML]: Yet Another Markup Language
 
 ## How editor tools differ from agents
 
@@ -35,7 +38,7 @@ Editors and agents share the same underlying loop, but their roles are opposite:
 
 Because an editor never writes to arbitrary pages, it has no `mode:` and a much smaller, read-only capability set.
 
----
+--------------------------------------------------------------------------------
 
 ## Frontmatter fields
 
@@ -61,7 +64,9 @@ label: "British Spelling"
 
 ### `description`
 
-A one-line summary, shown as the menu item's hover tooltip.
+A one-line summary of what the tool does. It appears in the strip along the bottom of the "/" menu whenever the tool is highlighted, and under the tool's name on the [/editors](/editors) page. Write it for someone deciding whether this is the tool they want; about three lines fit before it is cut off.
+
+This is yours and the LLM never touches it - unlike `Summary`, which is generated. See [frontmatter](frontmatter.md) for the distinction.
 
 ```yaml
 description: "Rewrite the selection in British spelling."
@@ -81,13 +86,13 @@ Which text the tool reads, and therefore where in the "/" menu it can be used. E
 scope: selection
 ```
 
-Use `cursor` for anything **generative** - a tool that writes text that isn't there yet. The alternative is `scope: selection`, which would force the user to select the very text they were trying to create.
+Use `cursor` for anything **generative** - a tool that writes text that isn't there yet. The alternative is `scope: selection`, which would force the user to select the very text they were trying to modify, replace, or source from.
 
 ### `operation`
 
 *default `replace`*
 
-Where the tool's result goes. Four of the five position themselves against the **range** that `scope` defined:
+Where the tool's result goes. Four of the five operations position themselves against the **range** that `scope` has defined:
 
 - `replace` - the range is swapped out for the result.
 - `prepend` - the result goes immediately **before** the range; nothing is removed.
@@ -101,7 +106,7 @@ operation: replace
 
 ### Which one do I want?
 
-| I want to… | operation |
+| I want to... | operation |
 |---|---|
 | change text that's already there | `replace` |
 | add something above / below it | `prepend` / `append` |
@@ -126,6 +131,8 @@ Three details worth knowing:
 
 Everything except `note` is reviewed before anything changes - the result appears as a proposal you accept or reject.
 
+![screenshot-editor-accept-reject.png](screenshot-editor-accept-reject.png){: alt="Screenshot showing the inline accept and reject buttons after an editor has modified the selected text." style="width:90%;border:3px double var(--base-color);padding:1em;"}
+
 ### `output`
 
 *default `Notes.md`, only meaningful with `operation: note`*
@@ -141,7 +148,7 @@ output: Reading-journal.md
 
 *default: none*
 
-A comma-separated list of internal tools to grant. Editors may grant only these four:
+A comma-separated list of internal tools to grant. Editors may grant only these four, the `recall` tool is automatic:
 
 | Name | What it does |
 |------|--------------|
@@ -158,7 +165,7 @@ capabilities: search_wiki, remember
 `remember` and `forget` are not an exception to the read-only rule: they write **only** to the tool's own ledger under `_dada/editors/{slug}/`, never to your vault. `recall` only reads them, and needs no grant. See **Cross-invocation memory** below.
 
 > [!Info] Why so few?
-> An editor's job is to transform the text in front of you, not rewrite your vault. Write/propose tools and current-document readers (`read_document`, `get_outline`) are deliberately **excluded**: writes aren't an editor's remit, and the live buffer - not the on-disk copy - is what the tool should see (it arrives as the input text and on the `editor` object).
+> An editor's job is to transform the text in front of you, not rewrite your vault. Write/propose tools and current-document readers (`read_document`, `get_outline`) are deliberately **excluded**: writes aren't an editor's remit, and the live buffer - not the on-disk copy - is what the tool should see.  Your live text is the editor's input.
 
 Unlike an agent, an editor tool **need not grant any tool at all** - a pure-prompt editor (no `capabilities`, no Python) is a perfectly valid saved prompt.
 
@@ -185,7 +192,7 @@ An **availability whitelist**: which content vaults this tool appears (and runs)
 vaults: fiction, worldbuilding
 ```
 
-The system vault itself is never a target. Unknown vault names aren't an error (you can author a tool before a vault exists); the tool simply won't appear there.
+The system vault itself is never a target. Unknown vault names aren't an error (you can author a tool before a vault exists); the tool simply won't appear there.  As a side note, editing in the system vault still allows Tzara built-in editors, so the "/" menu is not entirely empty. 
 
 ### `memory`
 
@@ -211,7 +218,9 @@ Opt **in** to a per-invocation **log page** under `{vault}/_dada/editors/{slug}/
 log: true
 ```
 
----
+Be mindfull that the logs will accumulate!  So, this is usefull for debugging or for tools you may not use that often.
+
+--------------------------------------------------------------------------------
 
 ## Body sections
 
@@ -222,15 +231,15 @@ log: true
 The directive - what the tool should do with the input text. A file with no `# Prompt` is invalid.
 
 > [!tip] Small-LLM guardrails
-> Keep the load-bearing boilerplate - e.g. *"Output ONLY the transformed text. No preamble, no code fences, no commentary."* Local models need this to stop wrapping output in fences or chatter. The tool's terminal text is what lands in your document (or note), so stray chatter lands there too.
+> Keep the load-bearing boilerplate - e.g. *"Output ONLY the transformed text. No preamble, no code fences, no commentary."* Local models need this to stop wrapping output in fences or chatter. The tool's final text is what lands in your document (or note), so stray chatter lands there too.
 
 ### `# Memory Prompt`
 
 *optional, only used with `memory: true`*
 
-The instruction the consolidation turn runs on. Omit it - the usual case - and the tool uses the shared default, so it also picks up any later improvement to that default. Write one to take ownership of the wording instead.
+The instruction the consolidation turn runs on. Omit it - the usual case - and the tool uses the shared default, so it also picks up any later improvement to that default. Write one to take ownership of the wording instead.  Just like agents. 
 
-New editor files ship the default in this section, fenced in `%%` so it reads as a comment and the shared default stays in force. Unfence and edit to make it yours. The placeholder `{label}` is filled in for you; any other braces are left alone.
+New editor files ship the default in this section, fenced in `%%` so it is a comment, and the shared default stays in force. Unfence and edit for customization. The placeholder `{label}` is filled in for you; any other braces are left alone.
 
 > [!warning] Don't write the tail
 > The "CURRENT memory" and "TRANSCRIPT" sections are appended for you. Writing your own would hand the model two copies.
@@ -254,7 +263,7 @@ def rot13():
     return codecs.encode(editor.selection, "rot_13")
 ```
 
----
+--------------------------------------------------------------------------------
 
 ## The `editor` object
 
@@ -264,7 +273,7 @@ Custom tools receive an `editor` object: a read-only snapshot of the document be
 |-----------|-------|
 | `editor.selection` | the highlighted text (`""` when nothing is selected) |
 | `editor.document` | the text your tool operates in: the whole unsaved buffer, minus the frontmatter block for a `scope: document` tool |
-| `editor.frontmatter` | the buffer's parsed YAML frontmatter, as a `dict` |
+| `editor.frontmatter` | the buffer's frontmatter, as a `dict`. Keys match case-insensitively (`fm["title"]` and `fm["Title"]` are the same), and iterating yields them spelled the way the author typed. It's a light parse of the *unsaved* buffer, so values stay raw strings and a multi-line list value is not included - read the page with `wiki` if you need the full block |
 | `editor.path` | the document's vault path (may be `""` for a brand-new doc) |
 
 It also tells you **where the user is**, which is what a tool needs in order to write text that fits its destination. All offsets index into `editor.document`.
@@ -279,18 +288,18 @@ It also tells you **where the user is**, which is what a tool needs in order to 
 | `editor.before_cursor` | everything before the caret |
 | `editor.after_cursor` | everything after the caret |
 
-There are two pairs because there are **two positions**: the range your `operation` acts on, and the caret the user left behind. `editor.before + editor.selection + editor.after` always reconstructs `editor.document`; the `_cursor` pair always splits it at the caret.
+There are two pairs because there are **two positions**: the range your `operation` acts on, and the caret the user left behind. `editor.before + editor.selection + editor.after` always reconstructs `editor.document`; the before and after `_cursor` pair always splits it at the caret.
 
 **They are not always the same**, and which is which follows from `scope` and `operation`:
 
 | | `.before` ends at | same as `.before_cursor`? |
 |---|---|---|
 | `selection` (any op) | the start of the selection | **only** if you dragged backwards, leaving the caret there |
-| `document` (any op) | the start of the body - so `.before` is `""` | no - the caret is wherever you were standing |
+| `document` (any op) | the start of the body - so `.before` is `""` | **no** - the caret is wherever you were standing |
 | `cursor` + `insert` / `note` | the caret (the range is empty) | **yes**, always - and `editor.selection` is `""` |
-| `cursor` + `replace` / `prepend` / `append` | the start of the **block** | no - the caret is somewhere inside that block |
+| `cursor` + `replace` / `prepend` / `append` | the start of the **block** | **no** - the caret is somewhere inside that block |
 
-That last row is the one that surprises people. With `scope: cursor` and a range operation, the range is the paragraph you're standing in, so `editor.selection` is that whole paragraph and `editor.before` stops at its first character - while `editor.before_cursor` runs all the way to where your caret actually is, part-way through it. Use `.before` / `.after` to reason about **what the tool will change**, and the `_cursor` pair to reason about **where the user was**.
+Regarding the last row in the table above, with `scope: cursor` and a range operation, the range is the paragraph you're standing in, so `editor.selection` is that whole paragraph and `editor.before` stops at its first character - while `editor.before_cursor` runs all the way to where your caret actually is, part-way through it. Use `.before` / `.after` to reason about **what the tool will change**, and the `_cursor` pair to reason about **where the user was**.
 
 ```python
 def word_count():
@@ -319,7 +328,7 @@ def related_pages(query: str):
         or "(no related pages found)"
 ```
 
----
+--------------------------------------------------------------------------------
 
 ## Cross-invocation memory
 
@@ -352,7 +361,7 @@ Ledgers too large for the prompt **degrade rather than disappear**: every ledger
 
 `memory.md` and `ledgers.md` are ordinary wiki pages. Edit them like any other page - the next invocation reads back exactly what you left. Blank the note to reset it; delete a `##` section to drop a ledger. Your `# Prompt` also outranks the note: if you change the directive to contradict something the tool recorded, it is told to delete that entry rather than carry it forward.
 
----
+--------------------------------------------------------------------------------
 
 ## Where a tool's files live
 
@@ -364,7 +373,7 @@ Everything an editor tool owns sits under the vault's RAG-excluded `_dada/editor
 
 These are hidden from search and normal navigation, but you can browse them in the **[Index](/index/{{vault}})** file manager (collapse the `_dada` folder to keep it out of the way). An `operation: note` run also gives you a clickable link to the digest right in the save confirmation.
 
----
+--------------------------------------------------------------------------------
 
 ## Complete examples
 
@@ -381,7 +390,7 @@ operation: replace
 
 # Prompt
 
-Rewrite the selected text in British spelling (colour, organise, …).
+Rewrite the selected text in British spelling (colour, organise, ...).
 Output ONLY the rewritten text. No preamble, no code fences.
 `````
 
@@ -421,7 +430,7 @@ operation: replace
 
 # Prompt
 
-Call the cipher tool the user names (ROT13 by default) and output ONLY
+Call the cipher tool `rot13` and output ONLY
 its exact return value. No preamble, no code fences.
 
 ```python
@@ -453,7 +462,7 @@ From the selected passage, extract notable terms, characters, or places,
 each with a one-line definition. Output ONLY those lines, no preamble.
 `````
 
----
+--------------------------------------------------------------------------------
 
 ## Validation checklist
 
@@ -475,4 +484,4 @@ A tool may grant **no** tools at all (a pure prompt is valid). Any failure marks
 - [editors](editors.md) - what editor tools are, conceptually
 - [the wiki object](wiki-object.md) - the `wiki` proxy method reference
 - [agent security](agent-security.md) - the isolation model custom tools run under (shared with agents)
-- [Main](../Main.md)
+- [Main](Main.md)

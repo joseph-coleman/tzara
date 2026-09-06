@@ -44,6 +44,7 @@ from src.agent_registry import (
     strip_comments,
     titleize,
 )
+from src.frontmatter import unquote
 from src.wikidoc import WikiDoc
 
 logger = logging.getLogger("editor_registry")
@@ -156,8 +157,8 @@ def parse_editor_file(slug: str, content: str) -> EditorToolDef:
     if fm.get("type", "") != "editor":
         d.errors.append("frontmatter must declare `type: editor`")
 
-    d.label = fm.get("label", "").strip() or slug
-    d.description = fm.get("description", "").strip()
+    d.label = unquote(fm.get("label", "")) or slug
+    d.description = unquote(fm.get("description", ""))
 
     max_iter_raw = fm.get("max_iterations", "").strip()
     if max_iter_raw:
@@ -279,8 +280,9 @@ operation: replace
 # memory: true
 # log: true
 Title: {name}
-Date: {date}
+Created: {date}
 Tags: editor
+GenerateMetadata: false
 ---
 
 %%

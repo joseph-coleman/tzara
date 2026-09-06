@@ -7,7 +7,8 @@ max_iterations: 4
 schedule: daily
 log: true
 Tags: astronomy, nasa, apod, api, markdown, python
-Summary: The task is to call the fetch_apod tool to obtain the APOD metadata and then generate a markdown page that includes the title, date, the image (or video link), the explanation, and a credit line, using only the data returned. No additional content, invention, or formatting beyond the specified markdown structure is allowed.
+GenerateMetadata: false
+Summary: This agent shows how to create a custom tool with python and then instruct the agent to use that tool on a daily schedule. This also demonstrates saving output to a specific file, as well as generating logs so you can inspect behavior.
 ---
 
 # Prompt

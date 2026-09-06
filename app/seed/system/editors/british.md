@@ -4,7 +4,9 @@ label: British Spelling
 scope: selection
 operation: replace
 Tags: spelling, american-english, british-english, localisation, text-editing
-Summary: The task is to convert American English spellings in a given text to their British English equivalents, altering only spelling. All other elements—word choice, punctuation, markdown formatting, and meaning—must remain unchanged.
+description: Convert select text from American English spellings to their British English equivalents.
+GenerateMetadata: false
+Summary: This Editor can correct your horrible spelling into proper English. Chip chip cheerio!
 ---
 
 # Prompt

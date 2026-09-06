@@ -13,7 +13,7 @@ On any given page you can either click the "Edit" link in the menu at the top or
 
 You can click Edit on any page to see what the "markdown" or puncutation looks like in practice to achieve whatever visual effect you see in your browser. The headings use a hash mark at the beginning of line, as you can see from  clicking "Edit" on this page.
 
-If you've configured Tzara with an LLM, there are a few extra fun things you can do when editing a document.  You can type a forward slash, `/`, and a menu will pop up with two options. They are:
+If you've configured Tzara with an LLM, there are a few extra fun things you can do when editing a document.  You can type a forward slash, `/`, (or `Ctrl+Shift+/`), and a menu will pop up with a few options. Some of them are: 
 
 * Continue Writing
 * Continue (grounded in notes)
@@ -27,7 +27,7 @@ The `/` only opens the menu at the start of a line or just after a space, so it 
 > [!note]
 > One of my favorites is converting prose to a mermaid diagram.  However, to create this note, I used the option "wrap as admonition."  I can never remember the syntax, so that's why this exists. 
 
-If you inject anything into your document you'll get prompted with a confirmation dialog, `Tab` to accept and `Esc` to reject.  You can click the buttons with your mouse, but you don't really need to take your hands off the keyboard either.  
+If you inject anything into your document you'll get prompted with a confirmation dialog, `Enter` to accept and `Esc` to reject.  You can click the buttons with your mouse, but you don't really need to take your hands off the keyboard either.  
 
 You can always undo with Ctrl+Z.  The editor is using [Codemirror 6](https://codemirror.net/) which is really nice. 
 
@@ -107,3 +107,4 @@ You can also see current agents running with an option to cancel those runs.  Re
 
 ## Related
 - [jupyter technical details](jupyter/jupyter-technical-details.md)
+- [help](../help.md)

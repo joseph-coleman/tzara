@@ -1,13 +1,15 @@
 ---
 type: editor
-label: "Research Note (memory + wiki)"
-description: "Note the selection and surface related wiki pages via a Python tool; maintains a consolidated research memory across documents."
+label: Research Note (memory + wiki)
+description: Note the selection and surface related wiki pages via a Python tool; maintains a consolidated research memory across documents.
 scope: selection
 operation: note
 output: Research-log.md
 memory: true
 log: true
-Tags: prompt, wiki-search, relatedpages, research-note, memory-management, editor-tool, knowledge-base
+Tags: prompt, wiki-search, related-pages, research-note, memory-management, editor-tool, knowledge-base
+GenerateMetadata: false
+Summary: This Editor example demonstrates a tool with memory, and a special Memory Prompt section that helps steer what and how this remembers things.  Inspect the logs if something feels off.  You can even edit the memory file directly since it's just a markdown file.  Or delete the memory altogether if you want to reset what this tool knows.
 ---
 
 # Prompt

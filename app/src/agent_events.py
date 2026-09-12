@@ -13,13 +13,14 @@ Agents subscribe to application events through an ``on:`` frontmatter field -
 a small human-readable grammar, sibling to ``schedule:`` (src.agent_schedule).
 Clauses are comma-separated; case-insensitive; filler words dropped.
 
-Pass-1 (available) forms::
+Examples::
 
     on: agent stock-digest completed
     on: any agent failed
     on: agent vault-gardener staged changes
     on: staging rejected for vault-gardener
     on: uploads in inbox/, upload
+    on: document created in inbox/, document modified in projects/ settled 30m
 
 Full grammar:
 
@@ -30,19 +31,18 @@ Full grammar:
     staging created|approved|rejected              -> staging.<verb>, any subject
     staging <verb> by|for [agent] <slug>           -> staging.<verb>, subject=slug
     upload[s] | file uploaded [in|to <prefix>]     -> upload, optional path prefix
+    document created|modified|deleted|moved        -> document.<verb>, subject=page
+        [in <prefix>] [by any actor] [settled <N>m]
 
 Prefixes with spaces are double-quoted: ``uploads in "My Folder/"``.
 Apostrophes are literal (``Joe's Notes/`` needs no quoting); commas stay
 reserved as the clause separator even inside quotes. Prefix matching is
 case-insensitive (casefold) - vault filesystems are case-insensitive here.
 
-Future forms (document/chat events) parse to their full shape but are refused
-at load time with "not available yet" - the grammar is the user-facing
-contract and must not change when those event types ship::
-
-    document created|modified|deleted|moved [in <prefix>] [by any actor]
-                                            [settled <N>m]
-    chat with <prefix>
+Document events match HUMAN changes unless ``by any actor`` widens them to
+agent-authored ones (``system`` consequence writes never match). created and
+modified wait for the page body to go quiet - ``settled <N>m``, defaulting to
+the dispatcher's default settle - so an editing session fires once, after it.
 
 The dispatch planner (plan_dispatch) is deliberately 100% pure: every piece of
 Redis state (pool contents, active/cooling slugs, budget counters) is passed
@@ -55,6 +55,8 @@ transport around it. Loop guards implemented here:
   - cooldown / budget / already-active / global run lock held: eligible events
     are RETAINED in the pool (deferred, never dropped) until the agent may fire
     again
+  - settle: document events are retained until their page has been quiet for
+    the trigger's settle time (a hold, not an alert)
   - max-age: stale pool events are discarded
   - static cycle check (validate_trigger_graph): NAMED subscriptions to
     run-emitted events form a dependency graph; cycles are a load-time error
@@ -72,17 +74,17 @@ from src.agent_registry import SLUG_RE  # noqa: E402
 
 _FILLER = {"when", "a", "an", "the"}
 
-# Event types emittable/subscribable in pass 1.
+DOCUMENT_TYPES = frozenset({
+    "document.created", "document.modified", "document.deleted", "document.moved",
+})
+# Document events whose page is still being written; these settle by default.
+_SETTLING_TYPES = frozenset({"document.created", "document.modified"})
+
 AVAILABLE_TYPES = frozenset({
     "agent.completed", "agent.failed", "agent.cancelled",
     "staging.created", "staging.approved", "staging.rejected",
     "upload",
-})
-# Parseable but refused at load time ("not available yet").
-FUTURE_TYPES = frozenset({
-    "document.created", "document.modified", "document.deleted",
-    "document.moved", "chat",
-})
+}) | DOCUMENT_TYPES
 
 # Events an agent RUN emits (edges for the static cycle check). Human-gated
 # staging.approved/rejected deliberately create no edge - a human click breaks
@@ -107,7 +109,7 @@ class Trigger:
     subject: str | None = None         # agent-slug scope; None = any
     prefix: str | None = None          # path-prefix scope (upload / document.* / chat)
     actor: str | None = None           # None = default policy; "any" = include agents
-    settle_minutes: int | None = None  # future pool-hold policy (document.*)
+    settle_minutes: int | None = None  # quiet time before firing (document.*)
     raw: str = ""
 
 
@@ -163,8 +165,8 @@ def _parse_settle(tokens: list[str], i: int, raw: str) -> tuple[int, int]:
     if not m.group(2) and nxt < len(tokens) and \
             tokens[nxt].lower() in ("m", "min", "mins", "minute", "minutes"):
         nxt += 1
-    if not 1 <= minutes <= 1440:
-        raise TriggerError(f"'settled' takes 1..1440 minutes (got {minutes})")
+    if not 0 <= minutes <= 1440:
+        raise TriggerError(f"'settled' takes 0..1440 minutes (got {minutes})")
     return minutes, nxt
 
 
@@ -217,7 +219,7 @@ def _parse_clause(raw: str) -> Trigger:
                 return Trigger(type=etype, subject=_slug_of(rest[idx], raw), raw=raw)
         raise TriggerError(f"cannot parse trigger: {raw!r}")
 
-    # document <verb> [in <prefix>] [by any actor] [settled <N>m]   (FUTURE)
+    # document <verb> [in <prefix>] [by any actor] [settled <N>m]
     if lt[0] in ("document", "documents") and len(tokens) >= 2:
         if lt[1] not in _DOC_VERBS:
             raise TriggerError(f"cannot parse trigger: {raw!r}")
@@ -238,29 +240,17 @@ def _parse_clause(raw: str) -> Trigger:
                     f"cannot parse trigger modifier {tokens[i]!r} in {raw!r}")
         return trig
 
-    # chat with <prefix>   (FUTURE)
-    if lt[0] == "chat" and len(tokens) == 3 and lt[1] == "with":
-        return Trigger(type="chat", prefix=tokens[2].lstrip("/"), raw=raw)
-
     raise TriggerError(f"cannot parse trigger: {raw!r}")
 
 
-def parse_triggers(text: str, *, allow_future: bool = False) -> list[Trigger]:
-    """Parse an ``on:`` value into Triggers; TriggerError on any bad clause.
-
-    Future event types (document.*, chat) parse to their full shape but raise
-    "not available yet" unless allow_future - the grammar stays stable while
-    the event types ship incrementally.
-    """
+def parse_triggers(text: str) -> list[Trigger]:
+    """Parse an ``on:`` value into Triggers; TriggerError on any bad clause."""
     out: list[Trigger] = []
     for clause in text.split(","):
         clause = clause.strip()
         if not clause:
             continue
-        trig = _parse_clause(clause)
-        if trig.type in FUTURE_TYPES and not allow_future:
-            raise TriggerError(f"'{trig.type}' triggers are not available yet")
-        out.append(trig)
+        out.append(_parse_clause(clause))
     if not out:
         raise TriggerError("empty trigger")
     return out
@@ -283,7 +273,13 @@ def trigger_matches(trig: Trigger, event: dict, subscriber_slug: str) -> bool:
     exclusions above cover every event the system emits today on their own.
 
     Prefix scoping is casefolded - the vault filesystems here are
-    case-insensitive, so ``Inbox/`` must match ``inbox/report.pdf``.
+    case-insensitive, so ``Inbox/`` must match ``inbox/report.pdf``. A move
+    matches a prefix at EITHER end: moving a page out of ``inbox/`` is as much
+    an inbox event as moving one in.
+
+    Document events carry the writer as actor. Only ``human`` matches unless
+    the trigger says ``by any actor``; ``system`` (link rewrites after a move,
+    vault seeding) never matches - those writes are consequences, not intent.
     """
     etype = event.get("type", "")
     if (etype.startswith("agent.") or etype.startswith("staging.")) \
@@ -301,11 +297,108 @@ def trigger_matches(trig: Trigger, event: dict, subscriber_slug: str) -> bool:
         return False
     if trig.subject is not None and event.get("subject") != trig.subject:
         return False
-    if trig.prefix is not None \
-            and not (event.get("subject") or "").casefold().startswith(
-                trig.prefix.casefold()):
-        return False
+    if etype in DOCUMENT_TYPES:
+        actor = event.get("actor") or ""
+        if actor == "system" or (actor != "human" and trig.actor != "any"):
+            return False
+    if trig.prefix is not None:
+        paths = [event.get("subject") or ""]
+        if etype == "document.moved":
+            paths.append(str((event.get("payload") or {}).get("from") or ""))
+        pre = trig.prefix.casefold()
+        if not any(p.casefold().startswith(pre) for p in paths):
+            return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Document events: change classification, settle, and rename following
+# ---------------------------------------------------------------------------
+
+def doc_key(vault: str, rel: str) -> str:
+    """Key for one page's change record / settle lookup. Casefolded: the vault
+    mount is case-insensitive, so an agent's ``physics/foo.md`` and the
+    watcher's ``Physics/Foo.md`` are the same page."""
+    return f"{vault}\x1f{(rel or '').casefold()}"
+
+
+def classify_change(kind: str, prev_hash: str | None, new_hash: str | None,
+                    marker: dict | None) -> dict:
+    """What one watcher-observed change means for events. Pure.
+
+    kind: created | modified | deleted | moved. Hashes are of the page BODY
+    (frontmatter stripped), so ``Updated`` stamps and LLM AutoTags/Summary
+    writes - the busiest writers - never read as a modification. marker is the
+    writer marker the write path left ({actor, cause_run_id, depth}); none
+    means a human (editor, Obsidian, the move/delete APIs).
+
+    Returns {"emit": bool, "touch": bool, "actor", "cause_run_id", "depth"}.
+    ``touch`` = this change restarts the page's settle clock.
+    """
+    marker = marker or {}
+    actor = marker.get("actor") or "human"
+    out = {"emit": False, "touch": False, "actor": actor,
+           "cause_run_id": marker.get("cause_run_id") or "",
+           "depth": int(marker.get("depth") or 0)}
+    intent = actor != "system"
+    if kind == "modified":
+        changed = prev_hash is None or prev_hash != new_hash
+        out["emit"] = out["touch"] = changed and intent
+    elif kind == "created":
+        out["emit"] = out["touch"] = intent
+    elif kind in ("deleted", "moved"):
+        out["emit"] = intent
+    return out
+
+
+def effective_settle(trig: Trigger, default_m: int) -> int:
+    """Minutes a matching event waits for its page to go quiet."""
+    if trig.settle_minutes is not None:
+        return trig.settle_minutes
+    return default_m if trig.type in _SETTLING_TYPES else 0
+
+
+def follow_moves(pool: list[dict]) -> tuple[dict, list]:
+    """Re-point pooled page events at where the page went. Pure.
+
+    A new Obsidian note is born ``Untitled.md``, renamed, then typed into. By
+    the time it settles, a ``created`` event naming ``Untitled.md`` points at
+    nothing - so a pooled created/modified event whose page later MOVED takes
+    the new path (payload ``was`` keeps the old one), and one whose page was
+    later DELETED is dropped: there is nothing left to react to. Chains are
+    followed in stream order (pool is oldest-first).
+
+    Returns (rewritten {id: entry}, drop_ids). The caller persists both - the
+    moved event itself may leave the pool this tick, taking the evidence.
+    """
+    rewritten: dict[str, dict] = {}
+    drops: list[str] = []
+    live: dict[str, list[dict]] = {}        # doc_key -> pooled entries naming it
+    for ev in pool:
+        etype = ev.get("type", "")
+        if etype not in DOCUMENT_TYPES:
+            continue
+        vault = ev.get("vault", "")
+        subject = ev.get("subject") or ""
+        if etype in _SETTLING_TYPES:
+            live.setdefault(doc_key(vault, subject), []).append(ev)
+        elif etype == "document.moved":
+            src = str((ev.get("payload") or {}).get("from") or "")
+            moved = live.pop(doc_key(vault, src), [])
+            for old in moved:
+                new = dict(old)
+                payload = dict(new.get("payload") or {})
+                payload.setdefault("was", new.get("subject"))
+                new["payload"] = payload
+                new["subject"] = subject
+                rewritten[new["id"]] = new
+            live.setdefault(doc_key(vault, subject), []).extend(
+                rewritten[o["id"]] for o in moved)
+        elif etype == "document.deleted":
+            for old in live.pop(doc_key(vault, subject), []):
+                drops.append(old["id"])
+                rewritten.pop(old["id"], None)
+    return rewritten, drops
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +473,23 @@ class DispatchPlan:
     dropped_depth: int = 0                               # had subscribers but hit the
                                                          # depth cap (counted)
     deferred: dict = field(default_factory=dict)         # slug -> {"reason", "events"}
+    settling: dict = field(default_factory=dict)         # slug -> events held for quiet
     matching: dict = field(default_factory=dict)         # event id -> full matching slug list
+
+
+def _quiet_seconds(ev: dict, now: datetime.datetime, last_touch: dict) -> float:
+    """How long the event's page has gone without a body change: since the
+    later of its recorded last change and the event itself."""
+    stamps = [ev.get("ts", ""),
+              last_touch.get(doc_key(ev.get("vault", ""), ev.get("subject") or ""), "")]
+    latest = None
+    for s in stamps:
+        try:
+            t = datetime.datetime.fromisoformat(s)
+        except (ValueError, TypeError):
+            continue
+        latest = t if latest is None or t > latest else latest
+    return float("inf") if latest is None else (now - latest).total_seconds()
 
 
 def plan_dispatch(agents: list[tuple[str, list, list]], pool: list[dict],
@@ -388,15 +497,24 @@ def plan_dispatch(agents: list[tuple[str, list, list]], pool: list[dict],
                   budget_used: dict, *, max_depth: int, budget_per_hour: int,
                   max_age_s: int,
                   unavailable: set | frozenset = frozenset(),
-                  run_lock_held: bool = False) -> DispatchPlan:
+                  run_lock_held: bool = False,
+                  last_touch: dict | None = None,
+                  default_settle_m: int = 0) -> DispatchPlan:
     """Decide fires/deletes/retentions for one tick. Pure - all Redis state
     comes in as arguments (agents: (slug, triggers, target_vaults)).
 
     Deferral semantics: events matching an active/cooling/over-budget agent
     are simply NOT delivered this tick - they stay in the pool (the caller
     only deletes plan.delete_ids and events whose full matching set has been
-    delivered). ``settled Xm`` later becomes one more retain-branch here.
+    delivered).
+
+    Settling is the same retention, per subscriber: an event is held for a
+    slug until its page (last_touch: doc_key -> last body change) has been
+    quiet for that slug's settle time - the smallest effective_settle among
+    the slug's matching triggers. Held events are counted in plan.settling,
+    not plan.deferred: waiting for quiet is the design working, not an alert.
     """
+    last_touch = last_touch or {}
     plan = DispatchPlan()
     per_slug: dict[str, list[dict]] = {}
 
@@ -413,11 +531,15 @@ def plan_dispatch(agents: list[tuple[str, list, list]], pool: list[dict],
             continue
 
         matching: list[str] = []
+        settle_for: dict[str, int] = {}
         for slug, trigs, targets in agents:
             if ev.get("vault") not in targets:
                 continue
-            if any(trigger_matches(t, ev, slug) for t in trigs):
+            hits = [t for t in trigs if trigger_matches(t, ev, slug)]
+            if hits:
                 matching.append(slug)
+                settle_for[slug] = min(effective_settle(t, default_settle_m)
+                                       for t in hits)
         if not matching:
             plan.delete_ids.append(eid)                    # pool hygiene
             continue
@@ -432,7 +554,14 @@ def plan_dispatch(agents: list[tuple[str, list, list]], pool: list[dict],
             plan.delete_ids.append(eid)                    # everyone already fired
             continue
         plan.matching[eid] = matching
+        quiet_s = None
         for s in undelivered:
+            if settle_for.get(s):
+                if quiet_s is None:
+                    quiet_s = _quiet_seconds(ev, now, last_touch)
+                if quiet_s < settle_for[s] * 60:
+                    plan.settling[s] = plan.settling.get(s, 0) + 1
+                    continue
             per_slug.setdefault(s, []).append(ev)
 
     for slug in sorted(per_slug):

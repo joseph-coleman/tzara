@@ -595,6 +595,10 @@ EVENT_COOLDOWN_S = int(os.environ.get("EVENT_COOLDOWN_S", "600"))
 EVENT_BUDGET_PER_HOUR = int(os.environ.get("EVENT_BUDGET_PER_HOUR", "6"))
 EVENT_MAX_AGE_S = int(os.environ.get("EVENT_MAX_AGE_S", "86400"))
 EVENT_STREAM_MAXLEN = int(os.environ.get("EVENT_STREAM_MAXLEN", "10000"))
+# `document created|modified` triggers wait until the page body has gone this
+# many minutes without a change (an editing session fires once, after it). A
+# trigger's own `settled <N>m` overrides it; `settled 0m` fires next tick.
+EVENT_SETTLE_DEFAULT_M = int(os.environ.get("EVENT_SETTLE_DEFAULT_M", "10"))
 #
 # Agent-owned output area INSIDE each content vault: vaults/{v}/{AGENT_OUTPUT_DIR}/
 # {agent}/... . Ownership is derived from LOCATION: everything under it is freely

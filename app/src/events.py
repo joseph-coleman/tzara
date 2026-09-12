@@ -7,7 +7,8 @@
 
 The wiki emits small event envelopes (XADD to the ``wiki:events`` stream) at
 a handful of call sites - agent lifecycle per vault (task_definitions),
-staging decisions and uploads (main.py). The worker's scheduler tick calls
+staging decisions and uploads (main.py), and page changes (the file watcher,
+through announce_file_change). The worker's scheduler tick calls
 dispatch_tick(), which drains the stream into a durable PENDING POOL, asks
 the pure planner (src.agent_events.plan_dispatch) what to fire, and enqueues
 event-triggered agent runs.
@@ -30,7 +31,9 @@ emit() must NEVER raise into its caller - event emission is a side channel,
 not a load-bearing step of any save/upload/run path.
 """
 
+import asyncio
 import datetime
+import hashlib
 import json
 import logging
 from dataclasses import asdict
@@ -40,10 +43,19 @@ from config import (
     EVENT_COOLDOWN_S,
     EVENT_MAX_AGE_S,
     EVENT_MAX_DEPTH,
+    EVENT_SETTLE_DEFAULT_M,
     EVENT_STREAM_MAXLEN,
     EVENT_TRIGGERS_ENABLED,
 )
-from src.agent_events import Fire, Trigger, plan_dispatch
+from src.agent_events import (
+    DOCUMENT_TYPES,
+    Fire,
+    Trigger,
+    classify_change,
+    doc_key,
+    follow_moves,
+    plan_dispatch,
+)
 from src.task_broker import get_async_redis
 
 logger = logging.getLogger("events")
@@ -54,6 +66,11 @@ POOL_KEY = "wiki:events:pool"
 STATUS_KEY = "wiki:events:status"          # last tick's deferrals/drops (for /agents)
 DISPATCH_LOCK_KEY = "wiki:events:dispatchlock"
 LASTGOOD_KEY = "wiki:events:lastgood"      # hash: slug -> last-good {triggers, targets}
+DOCS_KEY = "wiki:events:docs"              # hash: doc_key -> {h: body hash, t: last change}
+
+# A writer marker only has to outlive the watcher noticing the write (3s poll
+# plus the debounced enqueue); the metadata writer's suppression uses the same.
+WRITER_TTL_S = 120
 
 
 def cooldown_key(slug: str) -> str:
@@ -62,6 +79,10 @@ def cooldown_key(slug: str) -> str:
 
 def budget_key(slug: str) -> str:
     return f"wiki:events:budget:{slug}"
+
+
+def writer_key(vault: str, rel: str) -> str:
+    return f"wiki:events:writer:{vault}:{(rel or '').casefold()}"
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +125,119 @@ async def emit(event_type: str, vault: str, subject: str, actor: str, *,
                 await r.close()
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Page changes: writer attribution + the watcher's announce chokepoint
+# ---------------------------------------------------------------------------
+
+def mark_writer(vault: str, rel: str, actor: str, *, cause_run_id: str = "",
+                depth: int = 0) -> None:
+    """Say who is about to write a page, for the watcher to attribute the change
+    it will see. Call BEFORE the file operation. Never raises.
+
+    Only non-human writers mark: an unmarked change is a human's (the editor,
+    the move/delete APIs, Obsidian and every other outside editor), so the
+    human paths need nothing. ``system`` marks a consequence write - link
+    rewrites after a move, vault seeding - which updates the page's change
+    record but never emits.
+    """
+    if not EVENT_TRIGGERS_ENABLED:
+        return
+    from src.task_broker import get_sync_redis
+    try:
+        r = get_sync_redis()
+        try:
+            r.set(writer_key(vault, rel), json.dumps(
+                {"actor": actor, "cause_run_id": cause_run_id or "",
+                 "depth": int(depth)}), ex=WRITER_TTL_S)
+        finally:
+            r.close()
+    except Exception:
+        logger.exception("mark_writer failed for %s/%s", vault, rel)
+
+
+def _body_hash(vault: str, rel: str) -> str | None:
+    """sha256 of the page body (frontmatter stripped), or None if it's gone."""
+    from src.wikidoc import WikiDoc
+    pair = WikiDoc.read_text(vault, rel)
+    if pair is None:
+        return None
+    body = WikiDoc.strip_frontmatter(pair[0]).strip()
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _is_announced_page(vault: str, rel: str) -> bool:
+    from src import vault_registry
+    return rel.lower().endswith(".md") and not vault_registry.is_system_vault(vault)
+
+
+async def announce_file_change(kind: str, vault: str, rel: str,
+                               src_rel: str | None = None, *,
+                               stream_key: str = STREAM_KEY,
+                               docs_key: str = DOCS_KEY) -> str | None:
+    """Turn one watcher-observed page change into a ``document.<kind>`` event.
+
+    Called from the watcher's debounced enqueue, AFTER the debounce - so each
+    change is seen by one worker process, and writes the wiki suppressed (the
+    metadata task pre-sets the debounce key) never get here. Markdown pages in
+    content vaults only. Returns the stream id, or None when nothing was
+    emitted. Never raises.
+
+    Keeps the page's change record in ``docs_key`` ({h: body hash, t: last
+    body change}): the body hash is what makes a frontmatter-only write not a
+    modification, and ``t`` is the settle clock plan_dispatch reads. A move
+    re-keys the record so the clock follows the page.
+    """
+    if not EVENT_TRIGGERS_ENABLED:
+        return None
+    r = None
+    try:
+        if not await asyncio.to_thread(_is_announced_page, vault, rel):
+            return None
+        new_hash = None
+        if kind in ("created", "modified"):
+            new_hash = await asyncio.to_thread(_body_hash, vault, rel)
+            if new_hash is None:
+                return None                    # gone before we looked
+        r = get_async_redis()
+        raw_marker = await r.getdel(writer_key(vault, rel))
+        marker = json.loads(raw_marker) if raw_marker else None
+        key = doc_key(vault, rel)
+        raw_rec = await r.hget(docs_key, key)
+        rec = json.loads(raw_rec) if raw_rec else {}
+        verdict = classify_change(kind, rec.get("h"), new_hash, marker)
+
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        if kind in ("created", "modified"):
+            t = now if verdict["touch"] else rec.get("t", now)
+            await r.hset(docs_key, key, json.dumps({"h": new_hash, "t": t}))
+        elif kind == "deleted":
+            await r.hdel(docs_key, key)
+        elif kind == "moved" and src_rel:
+            src_key = doc_key(vault, src_rel)
+            if src_key != key:
+                src_rec = await r.hget(docs_key, src_key)
+                if src_rec:
+                    await r.hset(docs_key, key, src_rec)
+                    await r.hdel(docs_key, src_key)
+    except Exception:
+        logger.exception("announce_file_change failed for %s %s/%s", kind, vault, rel)
+        return None
+    finally:
+        if r is not None:
+            try:
+                await r.close()
+            except Exception:
+                pass
+
+    if not verdict["emit"]:
+        return None
+    return await emit(f"document.{kind}", vault=vault, subject=rel,
+                      actor=verdict["actor"], cause_run_id=verdict["cause_run_id"],
+                      depth=verdict["depth"],
+                      payload={"from": src_rel} if kind == "moved" else None,
+                      stream_key=stream_key)
 
 
 # ---------------------------------------------------------------------------
@@ -274,16 +408,45 @@ def format_trigger_note(events: list[dict]) -> str:
     at a stale report is worse than pointing at nothing: it reads last run's work
     as if it were fresh and redoes it.
     """
-    lines = [f"You were triggered by {len(events)} event(s):"]
+    # Repeats of one (type, vault, subject) collapse to a single line - a page
+    # edited across a session is one thing to look at, not N - and the list is
+    # capped so a burst (a folder dropped into a vault) can't swamp the kickoff.
+    groups: dict[tuple, list[dict]] = {}
     for ev in events:
+        groups.setdefault((ev.get("type", "?"), ev.get("vault", "?"),
+                           ev.get("subject", "")), []).append(ev)
+    lines = [f"You were triggered by {len(events)} event(s):"]
+    for n, ((etype, vault, subject), evs) in enumerate(groups.items()):
+        if n == _NOTE_MAX_LINES:
+            lines.append(f"- ...and {len(groups) - n} more")
+            break
+        last = evs[-1]
+        times = f" x{len(evs)}" if len(evs) > 1 else ""
         lines.append(
-            f"- {ev.get('type', '?')}: '{ev.get('subject', '')}' "
-            f"(vault {ev.get('vault', '?')}, by {ev.get('actor', '?')}, "
-            f"{ev.get('ts', '?')})")
-        detail = _output_clause(ev)
+            f"- {etype}: '{subject}'{times} (vault {vault}, by "
+            f"{last.get('actor', '?')}, {last.get('ts', '?')})")
+        detail = _output_clause(last) or _document_clause(last)
         if detail:
             lines.append(f"  {detail}")
     return "\n".join(lines)
+
+
+_NOTE_MAX_LINES = 20
+
+
+def _document_clause(ev: dict) -> str:
+    """Where a page event's page came from or went, when that isn't the subject."""
+    etype = str(ev.get("type", ""))
+    if etype not in DOCUMENT_TYPES:
+        return ""
+    payload = ev.get("payload") or {}
+    if etype == "document.moved" and payload.get("from"):
+        return f"moved from `{payload['from']}`"
+    if payload.get("was"):
+        return f"first seen as `{payload['was']}`, since renamed"
+    if etype == "document.deleted":
+        return "the page no longer exists"
+    return ""
 
 
 def _page_exists(vault: str, rel: str) -> bool:
@@ -330,6 +493,10 @@ _EVENT_PHRASE = {
     "staging.approved": "approved staging from agent",
     "staging.rejected": "rejected staging from agent",
     "upload": "upload of",
+    "document.created": "creation of",
+    "document.modified": "edit of",
+    "document.deleted": "deletion of",
+    "document.moved": "move of",
 }
 
 
@@ -487,7 +654,7 @@ async def _fire_event_run(r, fire: Fire,
 
 async def _write_status(r, now: datetime.datetime, deferred: dict,
                         pooled: int, dropped_depth: int,
-                        dropped_expired: int) -> None:
+                        dropped_expired: int, settling: dict | None = None) -> None:
     """Publish last-tick dispatch state for the /agents surface. A budget
     deferral here is the 'possible trigger storm' signal the UI must show -
     guards that only log are guards nobody sees."""
@@ -495,6 +662,7 @@ async def _write_status(r, now: datetime.datetime, deferred: dict,
         await r.set(STATUS_KEY, json.dumps({
             "ts": now.isoformat(timespec="seconds"),
             "deferred": deferred,
+            "settling": settling or {},
             "pooled": pooled,
             "dropped_depth": dropped_depth,
             "dropped_expired": dropped_expired,
@@ -553,6 +721,17 @@ async def dispatch_tick(now: datetime.datetime, agents: list | None = None) -> N
 
         await consume_new(r)
         pool = await read_pool(r)
+        # Re-point page events at renamed pages / drop ones for deleted pages,
+        # and PERSIST it: the moved/deleted evidence may leave the pool below.
+        rewritten, drops = follow_moves(pool)
+        if rewritten:
+            await r.hset(POOL_KEY, mapping={
+                eid: json.dumps(e, ensure_ascii=False) for eid, e in rewritten.items()})
+        if drops:
+            await r.hdel(POOL_KEY, *drops)
+            dropped = set(drops)
+            pool = [e for e in pool if e.get("id") not in dropped]
+        pool = [rewritten.get(e.get("id"), e) for e in pool]
         if not pool:
             await _write_status(r, now, {}, 0, 0, 0)
             return
@@ -584,11 +763,25 @@ async def dispatch_tick(now: datetime.datetime, agents: list | None = None) -> N
         from src.task_definitions import AGENT_RUN_LOCK_KEY
         run_lock_held = bool(await r.exists(AGENT_RUN_LOCK_KEY))
 
+        # Settle clocks: each pooled page event's last body change.
+        doc_keys = sorted({doc_key(e.get("vault", ""), e.get("subject") or "")
+                           for e in pool if e.get("type") in DOCUMENT_TYPES})
+        last_touch: dict[str, str] = {}
+        if doc_keys:
+            for k, raw in zip(doc_keys, await r.hmget(DOCS_KEY, doc_keys)):
+                try:
+                    if raw:
+                        last_touch[k] = json.loads(raw).get("t", "")
+                except (ValueError, TypeError, AttributeError):
+                    pass
+
         plan = plan_dispatch(subs, pool, now, active, cooling, budget_used,
                              unavailable=unavailable, run_lock_held=run_lock_held,
                              max_depth=EVENT_MAX_DEPTH,
                              budget_per_hour=EVENT_BUDGET_PER_HOUR,
-                             max_age_s=EVENT_MAX_AGE_S)
+                             max_age_s=EVENT_MAX_AGE_S,
+                             last_touch=last_touch,
+                             default_settle_m=EVENT_SETTLE_DEFAULT_M)
 
         # Execute. Delivered bookkeeping applies only to fires that actually
         # enqueued - a failed fire leaves its events pooled for next tick.
@@ -634,7 +827,8 @@ async def dispatch_tick(now: datetime.datetime, agents: list | None = None) -> N
                 plan.dropped_depth)
         await _write_status(r, now, plan.deferred,
                             await r.hlen(POOL_KEY),
-                            plan.dropped_depth, plan.dropped_expired)
+                            plan.dropped_depth, plan.dropped_expired,
+                            settling=plan.settling)
     finally:
         if got_lock:
             # Release only our own lock (GET-compare-DEL, run-lock idiom).

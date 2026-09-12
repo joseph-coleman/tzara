@@ -195,6 +195,14 @@ class _AgentWiki:
         bullets - prose mentions and task items are reported, never edited."""
         return self._edit("removeLink", path, target=target, reason=reason)
 
+    # --- whole pages ----------------------------------------------------
+    def deletePage(self, path, note=""):
+        """Delete a page. Links to it elsewhere are left to become ghost links."""
+        return self._edit("deletePage", path, note=note)
+    def movePage(self, path, dest, note=""):
+        """Move/rename a page; links to it elsewhere are rewritten to follow."""
+        return self._edit("movePage", path, dest=dest, note=note)
+
 wiki = _AgentWiki(_AGENT_API_BASE, _AGENT_TOKEN)
 del _AgentWiki, _AGENT_API_BASE, _AGENT_TOKEN
 '''

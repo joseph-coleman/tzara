@@ -126,6 +126,27 @@ def _default_page_md() -> str:
     return _ensure_md(vault_default_page(_active_vault.get()))
 
 
+def is_default_page(vault_id: str, rel: str) -> bool:
+    """Whether ``rel`` is ``vault_id``'s protected start page (never moved/deleted)."""
+    from src.vault_registry import vault_default_page
+    return _ensure_md(rel).casefold() == _ensure_md(vault_default_page(vault_id)).casefold()
+
+
+def inbound_referrer_count(vault_id: str, rel: str) -> int:
+    """How many OTHER pages link to ``rel`` - what a delete strands and a move
+    rewrites. From the edges table, so as current as the last reindex."""
+    conn = _get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT count(DISTINCT source_doc_id) FROM edges "
+            "WHERE vault_id = %s AND target_doc_id = %s AND source_doc_id <> %s",
+            (vault_id, rel, rel))
+        return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
 def _by_stem(paths) -> dict:
     """{wikilink_key(basename stem): [path, ...]} -- the candidate index that
     chunker.resolve_linkpath consumes (the final link segment is always the stem)."""
@@ -204,25 +225,28 @@ def _rewrite_inbound_links_sync(rename_map: dict[str, str]) -> list[str]:
     pre_by_stem = _by_stem(pre_paths)
     post_by_stem = _by_stem(post_paths)
 
+    vault = _active_vault.get()
     conn = _get_pg_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT DISTINCT source_doc_id FROM edges WHERE target_doc_id = ANY(%s)",
-            (old_ids,),
+            "SELECT DISTINCT source_doc_id FROM edges "
+            "WHERE vault_id = %s AND target_doc_id = ANY(%s)",
+            (vault, old_ids),
         )
         referrers = {r[0] for r in cur.fetchall()}
         # Asset embeds: resolve each stored embed target from its referrer's folder
         # and include the referrer if it points at a moved asset.
-        cur.execute("SELECT DISTINCT asset_name, doc_id FROM asset_refs")
+        cur.execute("SELECT DISTINCT asset_name, doc_id FROM asset_refs WHERE vault_id = %s",
+                    (vault,))
         for asset_name, doc_id in cur.fetchall():
             if resolve_linkpath(asset_name, _dir(doc_id), by_stem=pre_by_stem) in moved:
                 referrers.add(doc_id)
     finally:
         conn.close()
 
+    from src.events import mark_writer
     from src.wikidoc import WikiDoc
-    vault = _active_vault.get()
     changed: list[str] = []
     for ref_id in referrers:
         pair = WikiDoc.read_text(vault, ref_id)  # (content_LF, eol) | None
@@ -235,6 +259,9 @@ def _rewrite_inbound_links_sync(rename_map: dict[str, str]) -> list[str]:
             text, pre_by_stem, post_by_stem, _dir(ref_id), _dir(ref_new), rename_map, moved
         )
         if n and new_text != text:
+            # A link rewrite is a consequence of the move, not an edit anyone
+            # made to this page: no document.modified for it.
+            mark_writer(vault, ref_id, "system")
             # Canonical write preserves the referrer's own EOL - a CRLF page whose
             # link text changed must not get rewritten to LF (that was the churn).
             WikiDoc.write_text(vault, ref_id, new_text, eol=eol)
@@ -243,17 +270,10 @@ def _rewrite_inbound_links_sync(rename_map: dict[str, str]) -> list[str]:
     return changed
 
 
-async def _set_git_debounce(rel_path: str):
-    """Skip the watcher's duplicate git commit for a path we just committed.
-    Delegates to WikiDoc.set_debounce (the single key constructor); async callers
-    wrap the sync primitive in a thread."""
-    from src.wikidoc import WikiDoc
-    await asyncio.to_thread(WikiDoc.set_debounce, _active_vault.get(), rel_path)
-
-
-async def _apply_renames(rename_map: dict[str, str]) -> list[str]:
-    """The single move engine shared by ``move_document_op`` (rename) and
-    ``batch_move_op`` (move-into-folder).
+def _apply_renames_sync(rename_map: dict[str, str], *, message: str | None = None,
+                        writer: tuple[str, str, int] | None = None) -> list[str]:
+    """The single move engine shared by ``move_document_sync`` (rename, human or
+    agent) and ``batch_move_op`` (move-into-folder).
 
     Rewrites inbound ``[[links]]``/``![[embeds]]`` once for the whole batch, then
     moves each file on disk with a debounced git move commit. Callers own all
@@ -261,42 +281,53 @@ async def _apply_renames(rename_map: dict[str, str]) -> list[str]:
     primitive assumes ``rename_map`` is already resolved and safe. Returns the
     referrer doc_ids whose link text changed. The RAG database is reconciled by the
     file watcher (see module docstring) -- this never touches the DB.
-    """
-    referrers = await asyncio.to_thread(_rewrite_inbound_links_sync, rename_map)
 
+    ``message`` overrides the git move commit message (agent attribution);
+    ``writer`` = (actor, cause_run_id, depth) attributes the move for document
+    events - omit it for a human move. Synchronous; run it in a thread.
+    """
+    referrers = _rewrite_inbound_links_sync(rename_map)
+
+    from src.wikidoc import WikiDoc
+    vault = _active_vault.get()
     vt = _git_tracker() if USE_GIT_VERSIONING else None
-    vroot = vault_root(_active_vault.get())
+    vroot = vault_root(vault)
 
     for src_rel, dest_rel in rename_map.items():
-        src_abs, dest_abs = _abs(src_rel), _abs(dest_rel)
-
-        def _move_file(s=src_abs, d=dest_abs):
-            os.makedirs(os.path.dirname(d), exist_ok=True)
-            os.rename(s, d)
-
-        await asyncio.to_thread(_move_file)
+        if writer is not None:
+            from src.events import mark_writer
+            mark_writer(vault, dest_rel, writer[0], cause_run_id=writer[1], depth=writer[2])
+        dest_abs = _abs(dest_rel)
+        os.makedirs(os.path.dirname(dest_abs), exist_ok=True)
+        os.rename(_abs(src_rel), dest_abs)
 
         if vt is not None:
             try:
-                await asyncio.to_thread(
-                    vt.move_file,
-                    os.path.join(vroot, src_rel),
-                    os.path.join(vroot, dest_rel),
-                )
-                await _set_git_debounce(dest_rel)
+                vt.move_file(os.path.join(vroot, src_rel), os.path.join(vroot, dest_rel),
+                             message=message)
+                WikiDoc.set_debounce(vault, dest_rel)
             except Exception as e:  # git issues shouldn't fail the user's move
                 logger.error("apply_renames: git move commit failed: %s", e)
 
     return referrers
 
 
-async def move_document_op(src_rel: str, dest_rel: str, vault_id: str = DEFAULT_VAULT) -> dict:
+async def _apply_renames(rename_map: dict[str, str]) -> list[str]:
+    """Async wrapper over _apply_renames_sync (the ContextVar travels with to_thread)."""
+    return await asyncio.to_thread(_apply_renames_sync, rename_map)
+
+
+def move_document_sync(src_rel: str, dest_rel: str, vault_id: str = DEFAULT_VAULT, *,
+                       message: str | None = None,
+                       writer: tuple[str, str, int] | None = None) -> dict:
     """Move/rename a document from ``src_rel`` to ``dest_rel`` (vault-relative) within
-    ``vault_id``.
+    ``vault_id``. Synchronous - the form the write gate's promotion and agent
+    capabilities (both already off the event loop) call directly.
 
     Rewrites inbound wikilink text in referring files, moves the file on disk, and
     records a git move commit. The RAG database is reconciled by the file watcher
-    (see module docstring). Returns a status dict.
+    (see module docstring). Returns a status dict. ``message``/``writer`` as in
+    _apply_renames_sync.
     """
     _active_vault.set(vault_id)
     src_rel = _ensure_md(src_rel)
@@ -308,15 +339,14 @@ async def move_document_op(src_rel: str, dest_rel: str, vault_id: str = DEFAULT_
     if src_rel == _default_page_md():
         return {"status": "refused", "reason": "cannot move the default page"}
 
-    src_abs, dest_abs = _abs(src_rel), _abs(dest_rel)
-    if not await asyncio.to_thread(os.path.isfile, src_abs):
+    if not os.path.isfile(_abs(src_rel)):
         return {"status": "error", "reason": f"source not found: {src_rel}"}
-    if await asyncio.to_thread(os.path.exists, dest_abs):
+    if os.path.exists(_abs(dest_rel)):
         return {"status": "error", "reason": f"destination already exists: {dest_rel}"}
 
     # Rewrite inbound links + move on disk + git commit, all via the shared engine.
     # The watcher reconciles the RAG DB and commits the referrer edits.
-    referrers = await _apply_renames({src_rel: dest_rel})
+    referrers = _apply_renames_sync({src_rel: dest_rel}, message=message, writer=writer)
 
     logger.info(
         "move_document_op: %s -> %s (%d referrer file(s) updated)",
@@ -328,6 +358,11 @@ async def move_document_op(src_rel: str, dest_rel: str, vault_id: str = DEFAULT_
         "dest": dest_rel,
         "referrers_updated": referrers,
     }
+
+
+async def move_document_op(src_rel: str, dest_rel: str, vault_id: str = DEFAULT_VAULT) -> dict:
+    """Async form of move_document_sync, for the /api/move route."""
+    return await asyncio.to_thread(move_document_sync, src_rel, dest_rel, vault_id)
 
 
 # ---------------------------------------------------------------------------

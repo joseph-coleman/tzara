@@ -100,12 +100,35 @@ def _step_naive_timestamps_to_timestamptz(cur) -> list[str]:
     return [f"{t}.{c} -> timestamptz" for t, c in targets]
 
 
+def _step_agent_staging_ops(cur) -> list[str]:
+    """agent_staging.op / dest_path: staged page deletes and moves, beside writes.
+
+    The defaults make every existing row a plain write, which is what they are."""
+    cur.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'agent_staging'
+          AND column_name IN ('op', 'dest_path')
+    """)
+    have = {r[0] for r in cur.fetchall()}
+    added = []
+    if "op" not in have:
+        cur.execute("ALTER TABLE agent_staging "
+                    "ADD COLUMN IF NOT EXISTS op TEXT NOT NULL DEFAULT 'write'")
+        added.append("agent_staging.op")
+    if "dest_path" not in have:
+        cur.execute("ALTER TABLE agent_staging "
+                    "ADD COLUMN IF NOT EXISTS dest_path TEXT NOT NULL DEFAULT ''")
+        added.append("agent_staging.dest_path")
+    return added
+
+
 # Append-only. Each entry is (name, fn) where fn(cur) -> list of descriptions of
 # what it changed, empty when there was nothing to do. Order is irrelevant by
 # construction (every step is self-checking), but keep it chronological so the
 # list reads as a history.
 STEPS = [
     ("naive timestamps -> timestamptz", _step_naive_timestamps_to_timestamptz),
+    ("agent_staging page ops", _step_agent_staging_ops),
 ]
 
 

@@ -160,8 +160,19 @@ Clauses are comma-separated and case-insensitive (`when`, `a`, `an`, `the` are o
 | `agent <slug> staged changes` / `any agent staged changes` | `agent vault-gardener staged changes` | a run staged proposals for review |
 | `staging created\|approved\|rejected [by\|for <slug>]` | `staging rejected for vault-gardener` | a human decides a staged batch |
 | `upload[s] [in\|to <prefix>]` | `uploads in inbox/` | a file is uploaded (optionally under a folder) |
+| `document created\|modified\|deleted\|moved [in <prefix>] [by any actor] [settled <N>m]` | `document created in inbox/` | a page changes - see *Document events* below |
 
-Folder prefixes with spaces are double-quoted: `uploads in "My Folder/"`. Prefix matching is case-insensitive. Document/chat events (`document modified in x/ settled 10m`, `chat with x/`) are planned but **not available yet** - they parse, then refuse at load time.
+Folder prefixes with spaces are double-quoted: `uploads in "My Folder/"`. Prefix matching is case-insensitive.
+
+#### Document events
+
+`document` triggers fire when a markdown page in the vault changes - whether it was edited here, in Obsidian or another program writing the files, or by an agent.
+
+- **Your changes only, by default.** A plain `document modified` fires for changes a person made. Add `by any actor` to include changes made by agents, including an agent's staged edit once you apply it. An agent never triggers on its own changes, and housekeeping writes (the link rewrites after a move, a new vault's starter pages) never trigger anything.
+- **Body changes only.** Changing only a page's frontmatter - its `Updated` stamp, its generated tags and summary - is not a modification.
+- **Created and modified wait for the page to settle.** They fire once the page has gone `EVENT_SETTLE_DEFAULT_M` minutes (default 10) without a change, so an editing session fires once, after you stop, and the agent sees the finished text. `settled 30m` sets a different wait for that clause, and `settled 0m` fires on the next tick. Deleted and moved fire right away.
+- **Renames are followed.** A page created and renamed before it settles is reported under its new name, so Obsidian's *Untitled* notes arrive as whatever you called them. A page deleted before it settles is dropped.
+- **Moves match either end.** `document moved in inbox/` fires when a page moves into *or* out of `inbox/`.
 
 The triggering events are described to the agent in its kickoff message and recorded in the run log's *Triggered by* section.
 
@@ -169,6 +180,7 @@ The triggering events are described to the agent in its kickoff message and reco
 
 ```yaml
 on: any agent failed, uploads in inbox/
+on: document created in Inbox/, document modified in Projects/ settled 30m
 ```
 
 ### `mode`
@@ -426,6 +438,10 @@ Every write funnels through the write gate: in `propose` mode it stages a shadow
 | `propose_create` | A brand-new page (errors if it already exists). | `doc_id`, `content` (required), `note` |
 | `propose_edit` | Replace an existing page's full content. | `doc_id`, `new_content` (required), `note` |
 | `propose_append` | Append a block to the end of an existing page. | `doc_id`, `content` (required), `note` |
+| `propose_delete` | Delete a page. Links to it from other pages stay and become unresolved. | `doc_id` (required), `note` |
+| `propose_move` | Move or rename a page; links to it from other pages are rewritten to follow. | `doc_id`, `new_doc_id` (required), `note` |
+
+A page takes one kind of proposal per run: once a run has proposed deleting or moving a page, it cannot also edit that page, or write to the move's destination, until the proposal is applied. Applying a batch applies edits first, then moves, then deletes.
 
 **One section** *(prefer these over `propose_edit` when changing part of a page)*
 
@@ -453,7 +469,7 @@ Call `get_outline` first. If a section name does not match, the tool replies wit
 
 #### Why the menu has removal tools
 
-Each granularity can add, change **and** remove. This is deliberate: an agent given only add-shaped tools cannot maintain a structure, it can only inflate it. An agent asked to keep a vault's links tidy needs `remove_wikilink` for the same reason an agent asked to keep pages tidy needs `propose_section_delete` - otherwise every run can only make the vault bigger.
+Each granularity can add, change **and** remove. This is deliberate: an agent given only add-shaped tools cannot maintain a structure, it can only inflate it. An agent asked to keep a vault's links tidy needs `remove_wikilink` for the same reason an agent asked to keep pages tidy needs `propose_section_delete`, and one asked to merge duplicate pages needs `propose_delete` - otherwise every run can only make the vault bigger.
 
 `remove_wikilink` is intentionally narrow. It removes list bullets whose only content is the link - the shape `apply_wikilink` writes. A link written into a sentence is reported and left alone, because deleting it would mean rewriting someone's prose; use `propose_section_edit` if that sentence genuinely needs to change.
 

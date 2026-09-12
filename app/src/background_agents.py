@@ -948,7 +948,8 @@ async def _consolidate_agent_memory(agent: BackgroundAgent, vault_id: str,
 async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
                                cancel_check=None, kickoff_extra: str | None = None,
                                trigger_events: list[dict] | None = None,
-                               trigger_source: str = "manual") -> dict:
+                               trigger_source: str = "manual",
+                               event_depth: int = 0) -> dict:
     """Run one background agent against one vault. Returns a small status dict.
 
     Always writes a per-run log page (success or failure) into the agent's
@@ -1020,7 +1021,8 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
     llm_backend.begin_cold_session()
 
     run_id = f"{agent.name}-{vault_id}-{timefmt.file_stamp()}"
-    ctx_token = write_gate.set_run_context(run_id, agent.owner, agent.mode)
+    ctx_token = write_gate.set_run_context(run_id, agent.owner, agent.mode,
+                                           depth=event_depth)
     # Outlives the write-gate context above: the reserved ledger turn runs after
     # the loop is torn down and its rows belong in the same log section.
     ledger_sink, ledger_token = start_ledger_activity()
@@ -1032,7 +1034,8 @@ async def run_background_agent(agent: BackgroundAgent, vault_id: str, llm_mgr,
     if agent.custom_tool_names:
         from src import agent_tokens
         from src.agent_kernel import AgentKernelSession
-        token = agent_tokens.mint(agent.owner, vault_id, run_id, mode=agent.mode)
+        token = agent_tokens.mint(agent.owner, vault_id, run_id, mode=agent.mode,
+                                  depth=event_depth)
         kernel_session = AgentKernelSession(
             run_id, agent.name, vault_id, agent.py_source, token)
 

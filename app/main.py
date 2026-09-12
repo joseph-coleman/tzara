@@ -2864,6 +2864,11 @@ _AGENTS_INBOX_STATIC = """
     .staging-note { font-size: 0.85em; opacity: 0.85; font-style: italic; }
     .drift-badge { color: var(--color-danger, #b00020); font-weight: bold; font-size: 0.85em; }
     .staging-actions { margin: 0.4em 0; display: inline-flex; gap: 0.5em; }
+    .staging-op { display: inline-block; padding: 0 var(--space-xs);
+                  border-radius: var(--radius-sm); font-size: var(--text-xs);
+                  font-weight: 700; text-transform: uppercase; color: var(--bg-color); }
+    .staging-op--delete { background: var(--color-danger); }
+    .staging-op--move { background: var(--color-accent); }
 </style>
 <script>
     async function stagingAction(action, runId, ids, confirmMsg) {
@@ -2999,18 +3004,42 @@ async def agents_inbox(request: Request):
             f'\'Discard this batch entirely?\')">Discard</button></div>')
         for f in files:
             fid = f["id"]
+            op = f.get("op") or "write"
             path_label = escape(f'{f["vault_id"]}/{f["rel_path"]}')
             note = (f'<div class="staging-note">{escape(f["note"])}</div>'
                     if f["note"] else "")
-            drift = (' <span class="drift-badge">⚠ drifted - the page changed since '
-                     'this was staged; apply is refused</span>' if f["drifted"] else "")
-            diff_html = write_gate.unified_diff_html(
-                f["current_content"], f["staged_content"] or "", f["rel_path"])
+            drift = (f' <span class="drift-badge">⚠ drifted - {escape(f["drift_reason"])}; '
+                     'apply is refused</span>' if f["drifted"] else "")
+            op_badge, dest_label = "", ""
+            if op == "write":
+                diff_html = write_gate.unified_diff_html(
+                    f["current_content"], f["staged_content"] or "", f["rel_path"])
+            else:
+                from src import content_ops
+                try:
+                    n_in = await asyncio.to_thread(
+                        content_ops.inbound_referrer_count, f["vault_id"], f["rel_path"])
+                except Exception:
+                    n_in = 0
+                op_badge = f'<span class="staging-op staging-op--{op}">{op}</span> '
+                if op == "delete":
+                    effect = (f"{n_in} page(s) link here; those links will become "
+                              "unresolved." if n_in else "No other page links here.")
+                    diff_html = (f'<div class="staging-note">Deletes this page. {effect}</div>'
+                                 + write_gate.unified_diff_html(
+                                     f["current_content"], "", f["rel_path"]))
+                else:
+                    dest_label = f' → {escape(f["dest_path"])}'
+                    effect = (f"Links to it in {n_in} page(s) will be rewritten to follow."
+                              if n_in else "No other page links here.")
+                    diff_html = (f'<div class="staging-note">Moves the page to '
+                                 f'<code>{escape(f["dest_path"])}</code>; the content is '
+                                 f'unchanged. {effect}</div>')
             apply_btn = ("" if f["drifted"] else
                          f'<button class="btn-sm" onclick="stagingAction(\'apply\', \'{run_id}\', [{fid}])">Apply</button>')
             parts.append(
-                f'<details class="staging-file"><summary>'
-                f'<a href="/wiki/{escape(f["vault_id"])}/{escape(f["rel_path"].rsplit(".", 1)[0])}">{path_label}</a>{drift}</summary>'
+                f'<details class="staging-file"><summary>{op_badge}'
+                f'<a href="/wiki/{escape(f["vault_id"])}/{escape(f["rel_path"].rsplit(".", 1)[0])}">{path_label}</a>{dest_label}{drift}</summary>'
                 f'{note}'
                 f'<div class="staging-actions">{apply_btn}'
                 f'<button class="btn-sm btn-ghost" onclick="stagingAction(\'reject\', \'{run_id}\', [{fid}])">Reject</button></div>'
@@ -3148,6 +3177,11 @@ async def agents_inbox(request: Request):
                 badge = "possible trigger storm - " if "budget" in reason else ""
                 ev.append(f"**⚠ {_md_esc(slug)}: {info.get('events', '?')} event(s) "
                           f"waiting - {badge}{_md_esc(reason)}**{{: .drift-badge }}")
+            settling = status.get("settling") or {}
+            if settling:
+                ev.append(f"*{sum(settling.values())} page event(s) settling - waiting "
+                          f"for the page to go quiet before firing "
+                          f"({_md_esc(', '.join(sorted(settling)))}).*")
             if status.get("dropped_depth"):
                 ev.append(f"**⚠ {status['dropped_depth']} event(s) hit the depth cap "
                           f"last tick - a trigger chain was cut (EVENT_MAX_DEPTH)"
@@ -3156,8 +3190,8 @@ async def agents_inbox(request: Request):
                 ev.append(f"*{status['dropped_expired']} stale event(s) discarded "
                           f"last tick (EVENT_MAX_AGE_S).*")
         if not recent:
-            ev += ["", "*No events yet.* Agent lifecycle, staging decisions, and "
-                   "uploads will appear here."]
+            ev += ["", "*No events yet.* Agent lifecycle, staging decisions, "
+                   "uploads, and page changes will appear here."]
         else:
             ev += ["", "| Age | Type | Vault | Subject | Actor | Depth | Pooled |",
                    "|---|---|---|---|---|---|---|"]
@@ -3178,7 +3212,8 @@ async def agents_inbox(request: Request):
                     f"{_md_esc(str(evd.get('subject', ''))[:60])} | "
                     f"{_md_esc(evd.get('actor', ''))} | {evd.get('depth', 0)} | {pooled} |")
             ev += ["", '*"Pooled" = retained awaiting a deferred fire (agent busy, '
-                   'cooling down, or over its hourly budget).*']
+                   'cooling down, or over its hourly budget) or for its page to '
+                   'settle.*']
     parts.append(await _md_render("\n".join(ev)))
 
     # --- footer notes ---

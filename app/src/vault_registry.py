@@ -770,6 +770,10 @@ def _seed_vault_tree(slug: str, seed_name: str) -> None:
             if os.path.exists(dest):
                 continue  # never clobber a pre-existing same-named file
             try:
+                # Seeding is provisioning, not authoring: no document.created
+                # flood for a new vault's starter pages.
+                from src.events import mark_writer
+                mark_writer(slug, rel.replace(os.sep, "/"), "system")
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 if os.path.splitext(name)[1].lower() in SEED_TEXT_EXTS:
                     # Read/write as bytes so the seed file's own EOLs survive the copy;

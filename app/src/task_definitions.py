@@ -347,7 +347,8 @@ async def run_agent_task(agent_slug: str, vault_id: str | None = None,
                                                  cancel_check=_cancelled,
                                                  kickoff_extra=trigger_note,
                                                  trigger_events=trigger_events,
-                                                 trigger_source=trigger_source)
+                                                 trigger_source=trigger_source,
+                                                 event_depth=event_depth)
                 results.append(res)
                 # Lifecycle events are PER VAULT (no aggregate whole-task
                 # event). emit() never raises - see src.events.

@@ -87,7 +87,8 @@ async def _read(request: Request):
         # the worker thread (ContextVars don't cross to_thread from here since
         # the HTTP request is a different asyncio task than the agent loop).
         token = write_gate.set_run_context(claims["run_id"], claims["agent"],
-                                           claims.get("mode", "propose"))
+                                           claims.get("mode", "propose"),
+                                           claims.get("depth", 0))
         try:
             return write_gate.read_through(claims["vault"], path)
         finally:
@@ -178,7 +179,8 @@ async def _write(request: Request):
         # Mode comes from verified token claims (minted from the blessed file);
         # a stale token without the claim degrades safe-closed to propose.
         mode = claims.get("mode", "propose")
-        token = write_gate.set_run_context(claims["run_id"], claims["agent"], mode)
+        token = write_gate.set_run_context(claims["run_id"], claims["agent"], mode,
+                                           claims.get("depth", 0))
         try:
             return mode, write_gate.gated_write(claims["vault"], path, content, note=note)
         finally:
@@ -204,7 +206,7 @@ async def _write(request: Request):
 
 _EDIT_READ_OPS = {"outline", "readSection"}
 _EDIT_WRITE_OPS = {"sectionEdit", "sectionInsert", "sectionDelete",
-                   "addLink", "removeLink"}
+                   "addLink", "removeLink", "deletePage", "movePage"}
 
 
 def _edit_dispatch(op: str, vault: str, data: dict):
@@ -254,6 +256,12 @@ def _edit_dispatch(op: str, vault: str, data: dict):
         return ac.remove_wikilink(vault, path, data.get("target") or "",
                                   reason=data.get("reason") or "")
 
+    if op == "deletePage":
+        return ac.propose_delete(vault, path, note=note)
+
+    if op == "movePage":
+        return ac.propose_move(vault, path, data.get("dest") or "", note=note)
+
     raise ValueError(f"unknown edit op: {op}")
 
 
@@ -295,7 +303,8 @@ async def _edit(request: Request):
         # Same context restoration as /read - these ops read through this run's
         # staged overlay and write back through the gate.
         mode = claims.get("mode", "propose")
-        token = write_gate.set_run_context(claims["run_id"], claims["agent"], mode)
+        token = write_gate.set_run_context(claims["run_id"], claims["agent"], mode,
+                                           claims.get("depth", 0))
         try:
             return mode, _edit_dispatch(op, claims["vault"], data)
         finally:

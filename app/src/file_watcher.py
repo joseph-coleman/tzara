@@ -59,6 +59,8 @@ WRITE_DEBOUNCE_TTL = 120
 CANCELLED_SET = "watcher:cancelled"
 CANCELLED_TTL = 120
 
+_announce_tasks: set = set()
+
 
 def watcher_task_id(task_name: str, vault: str, rel_path: str) -> str:
     """THE watcher task id. Build it here, never by hand.
@@ -147,7 +149,12 @@ class WikiFileEventHandler(FileSystemEventHandler):
                 await r.hdel(PENDING_KEY, task_id)
                 logger.info("cancelled contradicting task: %s (superseded by %s)", task_id, task_name)
 
-    async def _debounced_enqueue(self, task_func, vault, rel_path, cancel_path=None, **kwargs):
+    async def _debounced_enqueue(self, task_func, vault, rel_path, cancel_path=None,
+                                 announce=None, **kwargs):
+        """announce: the document event kind this change is (created | modified |
+        deleted | moved), handed to events.announce_file_change once the debounce
+        passes - so of the per-process watchers exactly one announces each change,
+        and a write the wiki suppressed never does."""
         # get_async_redis (not a bare from_url) so this path inherits the shared
         # socket timeout + command retry - see its docstring: an unretried drop
         # here is exactly what stranded a task on 2026-07-29.
@@ -166,6 +173,15 @@ class WikiFileEventHandler(FileSystemEventHandler):
             if not was_set:
                 logger.debug("debounce skip: %s/%s", vault, rel_path)
                 return
+            if announce:
+                # Its own task: announcing reads the page and must neither delay
+                # nor be able to break the index enqueue below. The loop only
+                # weak-references tasks, so hold one until it finishes.
+                from src.events import announce_file_change
+                t = asyncio.ensure_future(announce_file_change(
+                    announce, vault, rel_path, src_rel=cancel_path))
+                _announce_tasks.add(t)
+                t.add_done_callback(_announce_tasks.discard)
             logger.info("enqueueing %s for %s/%s", task_func.task_name, vault, rel_path)
             task_id = watcher_task_id(task_func.task_name, vault, rel_path)
             await preseed_pending(r, task_id, task_func.task_name)
@@ -196,7 +212,8 @@ class WikiFileEventHandler(FileSystemEventHandler):
         from src.task_definitions import index_document_task
 
         self._enqueue(
-            self._debounced_enqueue(index_document_task, vault, rel, file_path=rel)
+            self._debounced_enqueue(index_document_task, vault, rel,
+                                    announce="created", file_path=rel)
         )
 
     def on_modified(self, event):
@@ -211,7 +228,8 @@ class WikiFileEventHandler(FileSystemEventHandler):
         from src.task_definitions import update_document_task
 
         self._enqueue(
-            self._debounced_enqueue(update_document_task, vault, rel, file_path=rel)
+            self._debounced_enqueue(update_document_task, vault, rel,
+                                    announce="modified", file_path=rel)
         )
 
     def on_deleted(self, event):
@@ -226,7 +244,8 @@ class WikiFileEventHandler(FileSystemEventHandler):
         from src.task_definitions import remove_document_task
 
         self._enqueue(
-            self._debounced_enqueue(remove_document_task, vault, rel, file_path=rel)
+            self._debounced_enqueue(remove_document_task, vault, rel,
+                                    announce="deleted", file_path=rel)
         )
 
     def on_moved(self, event):
@@ -247,17 +266,19 @@ class WikiFileEventHandler(FileSystemEventHandler):
             # index fresh into the destination vault.
             logger.info("cross-vault move: %s/%s -> %s/%s", src_vault, src_rel, dest_vault, dest_rel)
             self._enqueue(
-                self._debounced_enqueue(remove_document_task, src_vault, src_rel, file_path=src_rel)
+                self._debounced_enqueue(remove_document_task, src_vault, src_rel,
+                                        announce="deleted", file_path=src_rel)
             )
             self._enqueue(
-                self._debounced_enqueue(index_document_task, dest_vault, dest_rel, file_path=dest_rel)
+                self._debounced_enqueue(index_document_task, dest_vault, dest_rel,
+                                        announce="created", file_path=dest_rel)
             )
             return
         logger.info("file moved: %s/%s -> %s", dest_vault, src_rel, dest_rel)
         self._enqueue(
             self._debounced_enqueue(
                 move_document_task, dest_vault, dest_rel,
-                cancel_path=src_rel,
+                cancel_path=src_rel, announce="moved",
                 src_path=src_rel, dest_path=dest_rel,
             )
         )

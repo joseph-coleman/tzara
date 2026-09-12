@@ -394,6 +394,49 @@ def propose_append(vault_id: str, doc_id: str, content: str, note: str = "") -> 
     return f"propose_append: {result}"
 
 
+# --- whole-page removal and relocation ------------------------------------------
+#
+# The undo of propose_create, and the page-level move a human gets from /index.
+# Same gate, same modes; the inbox shows the decision rather than a diff body.
+
+
+def _inbound(vault_id: str, rel: str) -> int:
+    from src import content_ops
+    try:
+        return content_ops.inbound_referrer_count(vault_id, rel)
+    except Exception:  # pragma: no cover - a count must never fail the tool
+        return 0
+
+
+def propose_delete(vault_id: str, doc_id: str, note: str = "") -> str:
+    """Propose deleting a whole page; inbound links are left to go unresolved."""
+    from src import write_gate
+    rel = _doc_id(doc_id)
+    ok, msg = write_gate.gated_delete(vault_id, rel, note=note or f"delete {rel}")
+    if not ok:
+        return msg
+    n = _inbound(vault_id, rel)
+    tail = (f" {n} page(s) link to it; those links will become unresolved - fix or "
+            "remove them unless the page is coming back." if n else "")
+    return f"propose_delete: {msg}{tail}"
+
+
+def propose_move(vault_id: str, doc_id: str, new_doc_id: str, note: str = "") -> str:
+    """Propose moving/renaming a page; inbound links are rewritten to follow it."""
+    from src import write_gate
+    if not (new_doc_id or "").strip():
+        return "propose_move: new_doc_id is required (the page's new path)."
+    rel, dest = _doc_id(doc_id), _doc_id(new_doc_id)
+    ok, msg = write_gate.gated_move(vault_id, rel, dest,
+                                    note=note or f"move {rel} -> {dest}")
+    if not ok:
+        return msg
+    n = _inbound(vault_id, dest if write_gate.current_mode() == "act-with-checkpoint"
+                 else rel)
+    tail = f" Links to it in {n} page(s) are rewritten to the new path." if n else ""
+    return f"propose_move: {msg}{tail}"
+
+
 # --- section-scoped proposals -------------------------------------------------
 #
 # Whole-document propose_edit forces a small model to re-emit a page to change
@@ -874,6 +917,27 @@ GENERIC_TOOL_DEFINITIONS = [
         }, "required": ["doc_id", "content"]},
     }},
     {"type": "function", "function": {
+        "name": "propose_delete",
+        "description": ("Propose deleting a whole page - the counterpart to propose_create, "
+                        "for a page that is obsolete, empty, or merged into another. Links to "
+                        "it from other pages are NOT removed; they become unresolved. "
+                        + _PROPOSAL_NOTE),
+        "parameters": {"type": "object", "properties": {
+            "doc_id": {"type": "string", "description": "The page to delete."},
+            "note": {"type": "string", "default": "", "description": "Short reviewer-facing reason for the deletion."},
+        }, "required": ["doc_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "propose_move",
+        "description": ("Propose moving or renaming a page. Links to it from other pages are "
+                        "rewritten to follow it, so nothing breaks. " + _PROPOSAL_NOTE),
+        "parameters": {"type": "object", "properties": {
+            "doc_id": {"type": "string", "description": "The page to move."},
+            "new_doc_id": {"type": "string", "description": "The page's new path, e.g. 'Archive/Old Notes'."},
+            "note": {"type": "string", "default": "", "description": "Short reviewer-facing reason for the move."},
+        }, "required": ["doc_id", "new_doc_id"]},
+    }},
+    {"type": "function", "function": {
         "name": "propose_section_edit",
         "description": ("Propose replacing ONE section's body, keeping its heading and the "
                         "rest of the page untouched. Prefer this over propose_edit whenever "
@@ -983,6 +1047,8 @@ _GENERIC_FNS = {
     "propose_create": propose_create,
     "propose_edit": propose_edit,
     "propose_append": propose_append,
+    "propose_delete": propose_delete,
+    "propose_move": propose_move,
     "propose_section_edit": propose_section_edit,
     "propose_section_insert": propose_section_insert,
     "propose_section_delete": propose_section_delete,

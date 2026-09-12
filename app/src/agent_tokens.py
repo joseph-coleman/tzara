@@ -34,9 +34,9 @@ def _sign(payload: bytes) -> str:
 
 
 def mint(agent: str, vault: str, run_id: str, ttl_s: float = 7200,
-         mode: str = "propose") -> str:
+         mode: str = "propose", depth: int = 0) -> str:
     claims = {"agent": agent, "vault": vault, "run_id": run_id,
-              "mode": mode, "exp": time.time() + ttl_s}
+              "mode": mode, "depth": int(depth), "exp": time.time() + ttl_s}
     payload = base64.urlsafe_b64encode(
         json.dumps(claims, separators=(",", ":")).encode("utf-8")).decode("ascii")
     return f"{payload}.{_sign(payload.encode('ascii'))}"

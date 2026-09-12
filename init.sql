@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS agent_staging (
     rel_path    TEXT NOT NULL,
     base_hash   TEXT NOT NULL,            -- sha256 of the file at stage time; '' = new file
     note        TEXT NOT NULL DEFAULT '', -- tool-provided rationale shown in the inbox
+    op          TEXT NOT NULL DEFAULT 'write',  -- write|delete|move (writes carry a shadow body)
+    dest_path   TEXT NOT NULL DEFAULT '', -- move destination; rel_path is the source
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending|applied|rejected|drift
     created_at  TIMESTAMPTZ DEFAULT NOW(),
     decided_at  TIMESTAMPTZ,

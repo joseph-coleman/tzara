@@ -22,8 +22,10 @@ Staging model (externalizes chat's DocumentScratchpad to survive the run):
   - inside the mount shared rw by server+worker, OUTSIDE vaults/ so the watcher
   and Dropbox never see them.
 - MANIFEST: the agent_staging Postgres table (run_id, vault, path, base_hash,
-  note, status). base_hash freezes the file state the proposal was computed
-  against; promotion refuses on drift instead of blind-clobbering.
+  note, op, dest_path, status). base_hash freezes the file state the proposal
+  was computed against; promotion refuses on drift instead of blind-clobbering.
+  ``op`` is write (a shadow body), delete, or move (to dest_path) - page deletes
+  and moves carry no body, just the decision.
 
 Promotion (promote_file) is checkpoint-before-mutate: the pre-image is committed
 first (a no-op when the file is clean at HEAD - docversioning.save_version's
@@ -71,16 +73,18 @@ logger = logging.getLogger("write_gate")
 # writes -- and _dada/ is the agent-OWNED area, gated separately below.
 RESERVED_CONTROL_DIRS = {".git", ".obsidian", ".tzara"}
 
-# (run_id, agent_slug, mode) for the currently executing agent run in this
+# (run_id, agent_slug, mode, depth) for the currently executing agent run in this
 # asyncio task - same idiom as content_ops._active_vault. Tools read it
 # implicitly so their signatures stay clean. `mode` is the per-agent autonomy
 # ceiling from the BLESSED file ("propose" | "act-with-checkpoint"); it decides
 # whether gated_write stages or applies, and it can never come from a tool call.
-_run_ctx: ContextVar[tuple[str, str, str] | None] = ContextVar("agent_run_ctx", default=None)
+# `depth` is the run's event-chain depth, carried onto the document events its
+# direct writes cause so trigger chains through page edits hit EVENT_MAX_DEPTH.
+_run_ctx: ContextVar[tuple[str, str, str, int] | None] = ContextVar("agent_run_ctx", default=None)
 
 
-def set_run_context(run_id: str, agent_slug: str, mode: str = "propose"):
-    return _run_ctx.set((run_id, agent_slug, mode))
+def set_run_context(run_id: str, agent_slug: str, mode: str = "propose", depth: int = 0):
+    return _run_ctx.set((run_id, agent_slug, mode, int(depth or 0)))
 
 
 def reset_run_context(token) -> None:
@@ -95,6 +99,22 @@ def current_mode() -> str:
     """The active run's autonomy mode; safe-closed to 'propose' outside a run."""
     ctx = _run_ctx.get()
     return ctx[2] if ctx is not None else "propose"
+
+
+def current_depth() -> int:
+    """The active run's event-chain depth; 0 outside a run (a human applying a
+    staged batch starts no chain)."""
+    ctx = _run_ctx.get()
+    return ctx[3] if ctx is not None else 0
+
+
+def _mark_agent_writer(vault_id: str, rel: str, agent_slug: str, run_id: str) -> None:
+    """Attribute the page change about to happen to the agent that wrote it -
+    also when a human is applying the agent's staged proposal: the text is the
+    agent's, and the approval already has its own event (staging.approved)."""
+    from src.events import mark_writer
+    mark_writer(vault_id, rel, f"agent:{agent_slug}", cause_run_id=run_id,
+                depth=current_depth())
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +203,9 @@ def stage_write(vault_id: str, rel_path: str, new_content: str, note: str = "") 
             "use write_agent_output for owned pages")
 
     rel = _validate_rel_path(rel_path)
+    conflict = _write_conflict(run_id, vault_id, rel)
+    if conflict:
+        return f"stage_write: refused - {conflict}"
     base = _read_disk(vault_id, rel)
     base_hash = _content_hash(base) if base is not None else ""
 
@@ -190,14 +213,27 @@ def stage_write(vault_id: str, rel_path: str, new_content: str, note: str = "") 
     from src.wikidoc import WikiDoc
     WikiDoc._write_raw(shadow, new_content)  # DEFAULT_ENCODING + makedirs, verbatim
 
+    _record_row(run_id, agent_slug, vault_id, rel, base_hash, note)
+    logger.info("staged %s:%s for run %s", vault_id, rel, run_id)
+    return f"Staged proposed change to '{rel}' for human review."
+
+
+def _record_row(run_id: str, agent_slug: str, vault_id: str, rel: str,
+                base_hash: str, note: str, *, op: str = "write",
+                dest_path: str = "", applied: bool = False) -> None:
+    """Upsert one manifest row: pending (staged) or applied (act-mode audit).
+    A repeat for the same (run, vault, path) merges the note and keeps the FIRST
+    base_hash - the drift check is always against what the run first saw."""
     conn = _get_pg_connection()
     try:
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO agent_staging (run_id, agent_slug, vault_id, rel_path,
-                                       base_hash, note)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                                       base_hash, note, op, dest_path, status,
+                                       decided_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    CASE WHEN %s THEN NOW() END)
             ON CONFLICT (run_id, vault_id, rel_path) DO UPDATE
                 SET note = CASE
                         WHEN EXCLUDED.note = '' OR agent_staging.note = EXCLUDED.note
@@ -205,15 +241,15 @@ def stage_write(vault_id: str, rel_path: str, new_content: str, note: str = "") 
                         WHEN agent_staging.note = '' THEN EXCLUDED.note
                         ELSE agent_staging.note || ' | ' || EXCLUDED.note
                     END,
-                    status = 'pending', decided_at = NULL
+                    op = EXCLUDED.op, dest_path = EXCLUDED.dest_path,
+                    status = EXCLUDED.status, decided_at = EXCLUDED.decided_at
             """,
-            (run_id, agent_slug, vault_id, rel, base_hash, note),
+            (run_id, agent_slug, vault_id, rel, base_hash, note, op, dest_path,
+             "applied" if applied else "pending", applied),
         )
         conn.commit()
     finally:
         conn.close()
-    logger.info("staged %s:%s for run %s", vault_id, rel, run_id)
-    return f"Staged proposed change to '{rel}' for human review."
 
 
 def gated_write(vault_id: str, rel_path: str, new_content: str, note: str = "") -> str:
@@ -250,31 +286,181 @@ def gated_write(vault_id: str, rel_path: str, new_content: str, note: str = "") 
 
     # Audit row: same manifest table, pre-decided. Re-writes of the same file
     # in one run keep the FIRST base_hash (matching stage_write's semantics).
+    _record_row(run_id, agent_slug, vault_id, rel, base_hash, note, applied=True)
+    logger.info("act-applied %s:%s (run %s)", vault_id, rel, run_id)
+    return (f"Applied change to '{rel}' directly "
+            "(act-with-checkpoint; pre-image checkpointed).")
+
+
+# ---------------------------------------------------------------------------
+# Page deletes and moves (same gate, same modes, no shadow body)
+# ---------------------------------------------------------------------------
+
+def _pending_involving(run_id: str, vault_id: str, rel: str) -> list[tuple[str, str, str]]:
+    """(op, rel_path, dest_path) of this run's pending rows that touch ``rel`` -
+    as their page or as a move's destination."""
     conn = _get_pg_connection()
     try:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO agent_staging (run_id, agent_slug, vault_id, rel_path,
-                                       base_hash, note, status, decided_at)
-            VALUES (%s, %s, %s, %s, %s, %s, 'applied', NOW())
-            ON CONFLICT (run_id, vault_id, rel_path) DO UPDATE
-                SET note = CASE
-                        WHEN EXCLUDED.note = '' OR agent_staging.note = EXCLUDED.note
-                            THEN agent_staging.note
-                        WHEN agent_staging.note = '' THEN EXCLUDED.note
-                        ELSE agent_staging.note || ' | ' || EXCLUDED.note
-                    END,
-                    status = 'applied', decided_at = NOW()
-            """,
-            (run_id, agent_slug, vault_id, rel, base_hash, note),
-        )
-        conn.commit()
+            SELECT op, rel_path, dest_path FROM agent_staging
+            WHERE run_id = %s AND vault_id = %s AND status = 'pending'
+              AND (lower(rel_path) = lower(%s)
+                   OR (op = 'move' AND lower(dest_path) = lower(%s)))
+            """, (run_id, vault_id, rel, rel))
+        return cur.fetchall()
     finally:
         conn.close()
-    logger.info("act-applied %s:%s (run %s)", vault_id, rel, run_id)
-    return (f"Applied change to '{rel}' directly "
-            "(act-with-checkpoint; pre-image checkpointed).")
+
+
+def _describe_pending(rel: str, op: str, src: str, dest: str) -> str:
+    if op == "delete":
+        return f"you proposed deleting '{src}' earlier in this run"
+    if op == "move" and src.casefold() == rel.casefold():
+        return (f"you proposed moving '{src}' to '{dest}' earlier in this run - "
+                "change it in a later run, once the move is applied")
+    if op == "move":
+        return (f"'{dest}' is the destination of a move you proposed earlier in "
+                f"this run (from '{src}')")
+    return f"you already staged an edit to '{src}' in this run"
+
+
+def _write_conflict(run_id: str, vault_id: str, rel: str) -> str:
+    """Why a write to ``rel`` can't be staged in this run, or ''. Repeated edits
+    to one page accumulate; an edit to a page this run proposes deleting or
+    moving (or to a move's destination) cannot be applied in a sensible order."""
+    for op, src, dest in _pending_involving(run_id, vault_id, rel):
+        if op != "write":
+            return _describe_pending(rel, op, src, dest)
+    return ""
+
+
+def _page_op_conflict(run_id: str, vault_id: str, rel: str) -> str:
+    """Why a delete/move involving ``rel`` can't be staged in this run, or ''.
+    A page carries one kind of proposal per run."""
+    for op, src, dest in _pending_involving(run_id, vault_id, rel):
+        return (_describe_pending(rel, op, src, dest)
+                + " - a page takes one kind of proposal per run")
+    return ""
+
+
+def _refusal(tool: str, vault_id: str, rel_path: str) -> str:
+    """Location refusal for a page delete/move, or ''."""
+    verdict = classify_write(vault_id, rel_path)
+    if verdict == "refuse_system":
+        return f"{tool}: refused - {vault_id!r} is a system vault (human-only)."
+    if verdict == "refuse_reserved":
+        return (f"{tool}: refused - {rel_path!r} is a reserved control path "
+                "(dotfolder, non-content) and is not agent-writable.")
+    if verdict == "owned_direct":
+        return (f"{tool}: refused - {rel_path!r} is in the agent-owned area; "
+                "these tools act on the human's pages.")
+    return ""
+
+
+def _dest_taken(vault_id: str, rel: str) -> bool:
+    from src.wikidoc import WikiDoc
+    return os.path.exists(WikiDoc._abs_checked(vault_id, rel))
+
+
+def _delete_on_disk(vault_id: str, rel: str, agent_slug: str, run_id: str) -> None:
+    """Checkpoint-before-delete removal with agent attribution (git + events)."""
+    from src.wikidoc import WikiDoc
+    _mark_agent_writer(vault_id, rel, agent_slug, run_id)
+    WikiDoc.delete_file(vault_id, rel,
+                        message=f"agent({agent_slug}/{vault_id}/{run_id}): delete {rel}")
+
+
+def _move_on_disk(vault_id: str, src: str, dest: str, agent_slug: str,
+                  run_id: str) -> dict:
+    """The human move engine (inbound links rewritten), agent-attributed."""
+    from src import content_ops
+    return content_ops.move_document_sync(
+        src, dest, vault_id,
+        message=f"agent({agent_slug}/{vault_id}/{run_id}): move {src} -> {dest}",
+        writer=(f"agent:{agent_slug}", run_id, current_depth()))
+
+
+def gated_delete(vault_id: str, rel_path: str, note: str = "") -> tuple[bool, str]:
+    """Delete a human-space page through the gate: staged in propose mode,
+    applied (checkpoint first) with an audit row in act-with-checkpoint mode.
+    Returns (ok, message). Requires an active run context."""
+    ctx = current_run()
+    if ctx is None:
+        raise RuntimeError("gated_delete called outside an agent run context")
+    run_id, agent_slug = ctx[0], ctx[1]
+
+    refused = _refusal("propose_delete", vault_id, rel_path)
+    if refused:
+        return False, refused
+    rel = _validate_rel_path(rel_path)
+    from src import content_ops
+    if content_ops.is_default_page(vault_id, rel):
+        return False, f"propose_delete: refused - '{rel}' is the vault's start page."
+    conflict = _page_op_conflict(run_id, vault_id, rel)
+    if conflict:
+        return False, f"propose_delete: refused - {conflict}."
+    current = _read_disk(vault_id, rel)
+    if current is None:
+        return False, f"propose_delete: '{rel}' not found."
+    base_hash = _content_hash(current)
+
+    if current_mode() == "act-with-checkpoint":
+        _delete_on_disk(vault_id, rel, agent_slug, run_id)
+        _record_row(run_id, agent_slug, vault_id, rel, base_hash, note,
+                    op="delete", applied=True)
+        logger.info("act-deleted %s:%s (run %s)", vault_id, rel, run_id)
+        return True, (f"Deleted '{rel}' directly "
+                      "(act-with-checkpoint; pre-image checkpointed).")
+    _record_row(run_id, agent_slug, vault_id, rel, base_hash, note, op="delete")
+    logger.info("staged delete %s:%s for run %s", vault_id, rel, run_id)
+    return True, f"Staged deletion of '{rel}' for human review."
+
+
+def gated_move(vault_id: str, src_path: str, dest_path: str,
+               note: str = "") -> tuple[bool, str]:
+    """Move/rename a human-space page through the gate. Applying rewrites the
+    links that point at it, exactly as a human move does. Returns (ok, message).
+    Requires an active run context."""
+    ctx = current_run()
+    if ctx is None:
+        raise RuntimeError("gated_move called outside an agent run context")
+    run_id, agent_slug = ctx[0], ctx[1]
+
+    for p in (src_path, dest_path):
+        refused = _refusal("propose_move", vault_id, p)
+        if refused:
+            return False, refused
+    src, dest = _validate_rel_path(src_path), _validate_rel_path(dest_path)
+    if src == dest:
+        return False, "propose_move: source and destination are the same."
+    from src import content_ops
+    if content_ops.is_default_page(vault_id, src):
+        return False, f"propose_move: refused - '{src}' is the vault's start page."
+    for p in (src, dest):
+        conflict = _page_op_conflict(run_id, vault_id, p)
+        if conflict:
+            return False, f"propose_move: refused - {conflict}."
+    current = _read_disk(vault_id, src)
+    if current is None:
+        return False, f"propose_move: '{src}' not found."
+    if _dest_taken(vault_id, dest):
+        return False, f"propose_move: '{dest}' already exists - pick another path."
+    base_hash = _content_hash(current)
+
+    if current_mode() == "act-with-checkpoint":
+        result = _move_on_disk(vault_id, src, dest, agent_slug, run_id)
+        if result.get("status") != "ok":
+            return False, f"propose_move: {result.get('reason', 'move failed')}."
+        _record_row(run_id, agent_slug, vault_id, src, base_hash, note,
+                    op="move", dest_path=dest, applied=True)
+        logger.info("act-moved %s:%s -> %s (run %s)", vault_id, src, dest, run_id)
+        return True, f"Moved '{src}' to '{dest}' directly (act-with-checkpoint)."
+    _record_row(run_id, agent_slug, vault_id, src, base_hash, note,
+                op="move", dest_path=dest)
+    logger.info("staged move %s:%s -> %s for run %s", vault_id, src, dest, run_id)
+    return True, f"Staged move of '{src}' to '{dest}' for human review."
 
 
 def read_through(vault_id: str, rel_path: str) -> str | None:
@@ -383,7 +569,8 @@ def get_batch_files(run_id: str) -> list[dict]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, run_id, agent_slug, vault_id, rel_path, base_hash, note, status
+            SELECT id, run_id, agent_slug, vault_id, rel_path, base_hash, note,
+                   op, dest_path, status
             FROM agent_staging
             WHERE run_id = %s AND status IN ('pending', 'drift')
             ORDER BY rel_path
@@ -395,13 +582,20 @@ def get_batch_files(run_id: str) -> list[dict]:
 
     from src.wikidoc import WikiDoc
     for row in rows:
+        op = row.get("op") or "write"
         shadow = _shadow_path(run_id, row["vault_id"], row["rel_path"])
         row["staged_content"] = (WikiDoc._read_raw(shadow)
-                                 if os.path.isfile(shadow) else None)
+                                 if op == "write" and os.path.isfile(shadow) else None)
         current = _read_disk(row["vault_id"], row["rel_path"])
         row["current_content"] = current
         current_hash = _content_hash(current) if current is not None else ""
         row["drifted"] = current_hash != row["base_hash"]
+        row["drift_reason"] = ("the page changed since this was staged"
+                               if row["drifted"] else "")
+        if op == "move" and not row["drifted"] \
+                and _dest_taken(row["vault_id"], row["dest_path"]):
+            row["drifted"] = True
+            row["drift_reason"] = f"'{row['dest_path']}' now exists"
     return rows
 
 
@@ -410,7 +604,8 @@ def _get_row(row_id: int) -> dict | None:
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT id, run_id, agent_slug, vault_id, rel_path, base_hash, note, status
+            """SELECT id, run_id, agent_slug, vault_id, rel_path, base_hash, note,
+                      op, dest_path, status
                FROM agent_staging WHERE id = %s""", (row_id,))
         r = cur.fetchone()
         if r is None:
@@ -449,21 +644,24 @@ def _apply_to_disk(vault_id: str, rel: str, new_content: str,
     checkpoint for brand-new files on its own (`current is None` <=> not existed).
     """
     from src.wikidoc import WikiDoc
+    _mark_agent_writer(vault_id, rel, agent_slug, run_id)
     WikiDoc.commit(vault_id, rel, new_content,
                    message=f"agent({agent_slug}/{vault_id}/{run_id}): {rel}",
                    checkpoint=current is not None)
 
 
 def promote_file(row_id: int) -> str:
-    """Apply one staged file: drift-check -> checkpoint pre-image -> write ->
-    attributed commit -> watcher debounce. Returns 'applied' | 'drift' | error."""
+    """Apply one staged proposal: drift-check -> checkpoint pre-image -> write,
+    delete or move -> attributed commit -> watcher debounce. Returns
+    'applied' | 'drift' | error."""
     row = _get_row(row_id)
     if row is None or row["status"] not in ("pending", "drift"):
         return "not_pending"
 
+    op = row.get("op") or "write"
     vault_id, rel = row["vault_id"], row["rel_path"]
     shadow = _shadow_path(row["run_id"], vault_id, rel)
-    if not os.path.isfile(shadow):
+    if op == "write" and not os.path.isfile(shadow):
         _set_status(row_id, "rejected")
         return "shadow_missing"
 
@@ -475,15 +673,32 @@ def promote_file(row_id: int) -> str:
         _set_status(row_id, "drift")
         return "drift"
 
-    from src.wikidoc import WikiDoc
-    staged = WikiDoc._read_raw(shadow)
-    _apply_to_disk(vault_id, rel, staged, row["agent_slug"], row["run_id"], current)
+    if op == "delete":
+        _delete_on_disk(vault_id, rel, row["agent_slug"], row["run_id"])
+    elif op == "move":
+        if _dest_taken(vault_id, row["dest_path"]):
+            _set_status(row_id, "drift")
+            return "drift"
+        result = _move_on_disk(vault_id, rel, row["dest_path"],
+                               row["agent_slug"], row["run_id"])
+        if result.get("status") != "ok":
+            return f"move_failed: {result.get('reason', '')}"
+    else:
+        from src.wikidoc import WikiDoc
+        staged = WikiDoc._read_raw(shadow)
+        _apply_to_disk(vault_id, rel, staged, row["agent_slug"], row["run_id"], current)
 
     _set_status(row_id, "applied")
-    os.remove(shadow)
+    if op == "write":
+        os.remove(shadow)
     _maybe_cleanup_run(row["run_id"])
-    logger.info("applied staged %s:%s (run %s)", vault_id, rel, row["run_id"])
+    logger.info("applied staged %s %s:%s (run %s)", op, vault_id, rel, row["run_id"])
     return "applied"
+
+
+# Writes first: a staged edit to a page that links to a moving one was computed
+# against the pre-move text, and the move's link rewrite would drift it.
+_APPLY_ORDER = {"write": 0, "move": 1, "delete": 2}
 
 
 def reject_file(row_id: int) -> str:
@@ -500,7 +715,9 @@ def reject_file(row_id: int) -> str:
 
 def apply_batch(run_id: str, only_ids: list[int] | None = None) -> dict:
     counts = {"applied": 0, "drift": 0, "other": 0}
-    for row in get_batch_files(run_id):
+    rows = sorted(get_batch_files(run_id),
+                  key=lambda r: _APPLY_ORDER.get(r.get("op") or "write", 0))
+    for row in rows:
         if only_ids is not None and row["id"] not in only_ids:
             continue
         outcome = promote_file(row["id"])

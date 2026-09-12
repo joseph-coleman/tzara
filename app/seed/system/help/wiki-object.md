@@ -84,10 +84,14 @@ They go through the same write gate as `wiki.write()`: staged for review in `pro
 | `wiki.deleteSection(path, heading, index=None, note="")` | Removes a section: heading, body, and anything nested under it. |
 | `wiki.addLink(path, target, reason="")` | Adds `- [[target]]` under `path`'s `## Related` section. Idempotent. |
 | `wiki.removeLink(path, target, reason="")` | Removes a `## Related` bullet pointing at `target`. |
+| `wiki.deletePage(path, note="")` | Deletes the whole page. Links to it from other pages stay and become unresolved. |
+| `wiki.movePage(path, dest, note="")` | Moves or renames the page; links to it from other pages are rewritten to follow. |
 
 **Naming a section.** `heading` takes the heading text with or without its `#` marks - `"Overview"` and `"## Overview"` both work - and matching is case-insensitive. `"(top)"` addresses the text above the first heading. If a page repeats a heading, pass `index` (the number `outline()` shows in brackets) to say which one. A name that does not match raises with the list of sections that do exist.
 
 **What `removeLink` will not touch.** Only plain list bullets whose sole content is the link - the shape `addLink` writes. A link inside a sentence, a bullet carrying other prose, or a task item (`- [ ]` / `- [x]`) is reported back and left alone: a task records outstanding or completed work, and prose is someone's writing. Use `editSection` if that text genuinely needs to change.
+
+**Deleting and moving.** A page takes one kind of proposal per run: after staging a delete or move of a page, the same run cannot also edit it, or write to the move's destination.
 
 **Not for your own output folder.** These target reviewable vault pages. Your own `_dada/<agent>/` files you write whole with `wiki.write()`.
 

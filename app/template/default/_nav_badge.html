@@ -22,8 +22,8 @@
    captured querySelectorAll once at script time and worked only by ordering luck.)
 #}
 
-{% macro link(href, label, key, tooltip='', kind='info') -%}
-<a class="nav-badge-link" href="{{ href }}" title="{{ tooltip }}">{{ label }}<span class="nav-badge nav-badge--{{ kind }}" data-badge-key="{{ key }}" hidden></span></a>
+{% macro link(href, label, key, tooltip='', kind='info', command='') -%}
+<a class="nav-badge-link" href="{{ href }}" title="{{ tooltip }}"{% if command %} data-command="{{ command }}"{% endif %}>{{ label }}<span class="nav-badge nav-badge--{{ kind }}" data-badge-key="{{ key }}" hidden></span></a>
 {%- endmacro %}
 
 {% macro assets() -%}

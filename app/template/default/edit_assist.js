@@ -963,8 +963,12 @@
               origAnchor: startSel.anchor,
             };
           } else {
-            const eligible = fromA === 0
-              || /\s/.test(startDoc.sliceString(fromA - 1, fromA));
+            // A "/" typed while the [[wikilink]] completion list is open is part
+            // of the link path (wikilink_complete.js), never a menu trigger.
+            const eligible = (fromA === 0
+              || /\s/.test(startDoc.sliceString(fromA - 1, fromA)))
+              && !(window.CMEditor.completionStatus
+                   && window.CMEditor.completionStatus(update.startState));
             if (eligible) {
               trigger = { kind: "cursor", slashPos: toB };
             }

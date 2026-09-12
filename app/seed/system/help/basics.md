@@ -1,3 +1,18 @@
+---
+title: Basics
+Summary: Overview of the basic components of Tzara
+GenerateMetadata: false
+---
+
+* [help](../help.md)
+    * [configurations](configurations.md) - How (and where) to configure things.
+    * **basics** - The basics of using Tzara.
+    * [markdown-syntax](markdown-syntax.md) - The markdown you’ll use every day, shown by example.
+    * [frontmatter](frontmatter.md) - The metadata block at the top of a page, and what Tzara does with it.
+    * [jupyter](jupyter.md) - Jupyter integration details and examples.
+    * [agents](agents.md) - Creating agents and how they work
+    * [editors](editors.md) - Custom “/” menu commands that transform text as you edit
+
 # Basic workflow
 
 In Tzara, documents are just plain text files with some simple, extra punctuation to impart a sense of structure and emphasis.  This is called markdown.
@@ -7,13 +22,23 @@ Your basic workflow is to edit and create documents.  Your web of thoughts grow 
 And if you're not new to this, perhaps from using other wiki software or if you've used the software Obsidian, there are a few things here that might be new to you.
 
 
+## Viewing
+
+Pages are viewed in your web browser, styled however you like.  You can click on other links to view pages, or you can use some keyboard shortcuts to navigate.
+
+| Shortcut  | Action |
+|:---------:|--------|
+| Ctrl-E | Edit a page. |
+| Ctrl-P | Opens the command palette.  You can type a page name to navigate to it, or new page name to create it.  You can also type `>` for navigation commands, or `@` to switch vaults. |
+
+
 ## Editing
 
 On any given page you can either click the "Edit" link in the menu at the top or bottom of the page, or click the title in the center of the page. You'll land on a text box and you can start writing your novel or screenplay immediatly.  
 
 You can click Edit on any page to see what the "markdown" or puncutation looks like in practice to achieve whatever visual effect you see in your browser. The headings use a hash mark at the beginning of line, as you can see from  clicking "Edit" on this page.
 
-If you've configured Tzara with an LLM, there are a few extra fun things you can do when editing a document.  You can type a forward slash, `/`, (or `Ctrl+Shift+/`), and a menu will pop up with a few options. Some of them are: 
+If you've configured Tzara with an LLM, there are a few extra fun things you can do when editing a document.  You can type a forward slash, `/`, and a menu will pop up with two options. They are:
 
 * Continue Writing
 * Continue (grounded in notes)
@@ -24,12 +49,29 @@ For all the other options in the forward slash menu, select a passage of text fi
 
 The `/` only opens the menu at the start of a line or just after a space, so it keeps out of your way when you are typing a path or using a slash as ordinary punctuation. To open the menu anywhere else - at the end of a sentence, or in the middle of a word - press `Ctrl+Shift+/` instead. It works with or without a selection, and nothing is typed into your document, so `Esc` leaves your text exactly as it was.
 
-> [!note]
-> One of my favorites is converting prose to a mermaid diagram.  However, to create this note, I used the option "wrap as admonition."  I can never remember the syntax, so that's why this exists. 
+!!! note
+    One of my favorites is converting prose to a mermaid diagram.  However, to create this note, I used the option "wrap as admonition."  I can never remember the syntax, so that's why this exists. 
 
-If you inject anything into your document you'll get prompted with a confirmation dialog, `Enter` to accept and `Esc` to reject.  You can click the buttons with your mouse, but you don't really need to take your hands off the keyboard either.  
+If you inject anything into your document you'll get prompted with a confirmation dialog, `Tab` to accept and `Esc` to reject.  You can click the buttons with your mouse, but you don't really need to take your hands off the keyboard either.  
 
 You can always undo with Ctrl+Z.  The editor is using [Codemirror 6](https://codemirror.net/) which is really nice. 
+
+### Keyboard Shortcuts
+
+When editing a document, you have the following keyboard shortcuts available. Selected text gets wrapped with the markdown characters accordingly. 
+
+| Shortcut | Format | Result |
+|:--------:|:------:|--------|
+| Ctrl-B | `**bold**` | **bold** |
+| Ctrl-I | `*italic*` | *italic* |
+| Ctrl-Shift-X | `~~strike~~` | ~~strike~~ |
+| Ctrl-Shift-H | `==highlight==` | ==highlight== |
+| Ctrl-E | `` `code` `` | `code` |
+| Ctrl-K | `[[help]]` | [[help]], on empty selection opens autocomplete |
+| Ctrl-S |  | Saves the document. |
+| Ctrl-Z |  | Undo |
+| Ctrl-F |  | Open "Find" / "Replace" | 
+| /  or Ctrl-Shift-/ |  | Opens Editor Tool menu |
 
 ## Document conversation
 
@@ -41,8 +83,8 @@ You are always in control.
 
 A different approach is the vault wide conversations that you can reach from the "Chat" link at the top of the page.  This is a broader scope conversation.  You can ask about things in the vault and it will try to find them.  With this interface you can ask the LLM to create multiple pages, and it will attempt to do that. 
 
-> [!info]- The success...
-> The success of any of this is going to be how big of a model you can run locally.  Some of the small ones can be fun to chat with even if they can't make any tool calls.  On vault level models without tool calling are essentially useless, but at a document level, really small models can still see the document you're viewing at the time, and so can be focused on that.
+!!! info "The success..."
+    The success of any of this is going to be how big of a model you can run locally.  Some of the small ones can be fun to chat with even if they can't make any tool calls.  On vault level models without tool calling are essentially useless, but at a document level, really small models can still see the document you're viewing at the time, and so can be focused on that.
 
 ## Canvas
 
@@ -80,8 +122,8 @@ This page allows you to temporarily switch your chat model to something else.  A
 
 Personally, I'm running Lemonade on a secondary machine on my local network, and I really like the `gpt-oss-120b` model for chat, and `embeddinggemma-300m` for embeddings.  The embedding models have a **strong** influence on how well Tzara can retrieve documents based on similar meanings. 
 
-> [!warning]
-> Switching embedding models is not so simple.  It requires a config change and a restart of the Tzara server and workers.  When an embedding model change is detected, all the documents in all the vaults need to be reindexed, and that can take some time.  If it doesn't happen, or something interrupts, then you can go to the Tasks page. 
+!!! warning
+    Switching embedding models is not so simple.  It requires a config change and a restart of the Tzara server and workers.  When an embedding model change is detected, all the documents in all the vaults need to be reindexed, and that can take some time.  If it doesn't happen, or something interrupts, then you can go to the Tasks page. 
 
 ## Tasks
 
@@ -107,4 +149,3 @@ You can also see current agents running with an option to cancel those runs.  Re
 
 ## Related
 - [jupyter technical details](jupyter/jupyter-technical-details.md)
-- [help](../help.md)

@@ -1,3 +1,19 @@
+---
+title: Markdown Syntax
+Summary: Quick reference for basic markdown syntax.
+GenerateMetadata: false
+---
+
+* [help](../help.md)
+    * [configurations](configurations.md) - How (and where) to configure things.
+    * [basics](basics.md) - The basics of using Tzara.
+    * **markdown-syntax** - The markdown you’ll use every day, shown by example.
+        * [complete markdown reference](complete-markdown-reference.md) Even more markdown examples.
+    * [frontmatter](frontmatter.md) - The metadata block at the top of a page, and what Tzara does with it.
+    * [jupyter](jupyter.md) - Jupyter integration details and examples.
+    * [agents](agents.md) - Creating agents and how they work
+    * [editors](editors.md) - Custom “/” menu commands that transform text as you edit
+
 # Markdown Syntax by Example
 
 Every page in Tzara is markdown. Here's the syntax you'll use most, each shown as the source you'd type followed by what it produces.

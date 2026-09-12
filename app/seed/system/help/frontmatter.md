@@ -4,6 +4,16 @@ summary: Every metadata key Tzara reads from the top of a page, and what each on
 GenerateMetadata: false
 ---
 
+* [help](../help.md)
+    * [configurations](configurations.md) - How (and where) to configure things.
+    * [basics](basics.md) - The basics of using Tzara.
+    * [markdown-syntax](markdown-syntax.md) - The markdown you’ll use every day, shown by example.
+    * **frontmatter** - The metadata block at the top of a page, and what Tzara does with it.
+    * [jupyter](jupyter.md) - Jupyter integration details and examples.
+    * [agents](agents.md) - Creating agents and how they work
+    * [editors](editors.md) - Custom “/” menu commands that transform text as you edit
+
+
 # Frontmatter
 
 *[YAML]: Yet Another Markup Language or YAML Ain't Markup Language

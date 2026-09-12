@@ -177,6 +177,8 @@ class PyinstrumentMiddleware(BaseHTTPMiddleware):
 # `git init` in the work tree would otherwise create a .git dir on the synced tree.
 from src import vault_registry
 from src import vault_index
+from src import md_sections
+from src.chunker import shortest_linkpath
 vault_registry.ensure_default_vault()
 # The system vault (config.SYSTEM_VAULT, default "dada") holds wiki-owned content --
 # agent definitions and help docs. Hidden from enumeration, excluded from RAG, but
@@ -864,6 +866,12 @@ async def edit_document(request: Request):
     # symmetrically (prefilling the prompt with the vault-explicit display path caused
     # the vault segment to be double-applied -- /wiki/{v}/wiki/{v}/...).
     doc_data["move_source_rel"] = escape(wikidoc.relative_display_path() or "")
+    # The file as it is on disk now - not the ?revision= text being edited, since
+    # a save overwrites the current file. /save/ refuses (409) if it has changed.
+    rel = wikidoc.relative_file_path()
+    doc_data["base_hash"] = (
+        await asyncio.to_thread(WikiDoc.disk_hash, vault, rel) if rel else ""
+    )
 
     response_content = doc_template.render(doc_data)
 
@@ -1011,6 +1019,24 @@ async def save_document(request: Request):
     vault = wikidoc.vault()
     if not vault_registry.vault_exists(vault):
         raise HTTPException(status_code=404, detail=f"Unknown vault: {vault}")
+
+    # Stale-save guard. The markdown editor posts the hash of the file it opened
+    # against; a mismatch means something wrote the file since (another tab, an
+    # agent, the metadata task), so refuse and return the current text to reconcile
+    # against. Callers that post no base_hash (canvas auto-save) keep the plain write.
+    base_hash = form.get("base_hash")
+    if base_hash is not None:
+        rel = wikidoc.relative_file_path()
+        found = await asyncio.to_thread(WikiDoc.read_text, vault, rel) if rel else None
+        current_hash = WikiDoc.content_hash(found[0]) if found else ""
+        if base_hash != current_hash:
+            return JSONResponse(
+                {"status": "conflict",
+                 "current": found[0] if found else "",
+                 "base_hash": current_hash},
+                status_code=409,
+            )
+
     wikidoc.set_content(updated_markdown)
     await asyncio.to_thread(wikidoc.save)
 
@@ -3572,6 +3598,66 @@ async def list_images_endpoint(request: Request):
     return JSONResponse(_walk_wiki(("png", "jpg", "jpeg", "gif", "webp", "svg"), _request_vault(request)))
 
 
+# /api/link-targets + /api/link-headings feed the editor's [[ autocomplete
+# (wikilink_complete.js). Link TEXT is computed here with the shared resolver, so
+# an inserted link resolves exactly as the renderer, graph and move-rewriter do.
+def _link_source_dir(request: Request) -> str:
+    """Folder of the document being edited (`source` = its vault-relative,
+    extension-less path). Only breaks resolution ties by proximity."""
+    return WikiDoc.parse_url_path(request.query_params.get("source", ""))["path"]
+
+
+def _link_targets(vault: str, source_dir: str) -> list[dict]:
+    """Every linkable file with the shortest link text that resolves to it.
+
+    Agent-owned files carry a `group`: "log" for per-run log pages, "agent" for the
+    rest of the owned area. The client ranks them below the author's pages and
+    leaves logs out until the query names their folder - logs outnumber real pages
+    by orders of magnitude (the same rule as agent_capabilities._list_owned_area)."""
+    from config import AGENT_LOGS_SUBDIR, AGENT_OUTPUT_DIR
+    owned_prefix = f"{AGENT_OUTPUT_DIR}/"
+    logs_seg = f"/{AGENT_LOGS_SUBDIR}/"
+    all_paths, by_stem = vault_index.get_index(vault)
+    out = []
+    for p in all_paths:
+        if HIDE_DOT_DIRECTORY and _index_hidden(p):
+            continue
+        row = {"path": p, "link": shortest_linkpath(p, source_dir, by_stem=by_stem)}
+        if p.startswith(owned_prefix):
+            row["group"] = "log" if logs_seg in f"/{p}" else "agent"
+        out.append(row)
+    out.sort(key=lambda row: row["path"].lower())
+    return out
+
+
+def _link_headings(vault: str, source_dir: str, target: str) -> dict:
+    """Headings of the note `target` resolves to; empty when it resolves to nothing
+    or to a non-markdown file."""
+    rel = vault_index.resolve(target, source_dir, vault)
+    read = WikiDoc.read_text(vault, rel) if rel and rel.lower().endswith(".md") else None
+    if read is None:
+        return {"path": None, "headings": []}
+    return {
+        "path": rel,
+        "headings": [{"text": s["heading_text"], "level": s["level"]}
+                     for s in md_sections.parse_sections(read[0]) if s["level"] > 0],
+    }
+
+
+# /api/link-targets?vault=&source=
+async def link_targets_endpoint(request: Request):
+    vault = _request_vault(request)
+    return JSONResponse(await asyncio.to_thread(_link_targets, vault, _link_source_dir(request)))
+
+
+# /api/link-headings?vault=&source=&target=
+async def link_headings_endpoint(request: Request):
+    vault = _request_vault(request)
+    target = request.query_params.get("target", "")
+    return JSONResponse(await asyncio.to_thread(
+        _link_headings, vault, _link_source_dir(request), target))
+
+
 # href/src attribute whose value is a URL we may need to resolve against a
 # document's vault/path. Captures the quote style so it round-trips unchanged.
 _URL_ATTR_RE = re.compile(
@@ -4705,6 +4791,8 @@ routes = [
     Route("/api/batch-delete", endpoint=batch_delete_endpoint, methods=["POST"]),
     Route("/api/files", endpoint=list_files_endpoint, methods=["GET"]),
     Route("/api/images", endpoint=list_images_endpoint, methods=["GET"]),
+    Route("/api/link-targets", endpoint=link_targets_endpoint, methods=["GET"]),
+    Route("/api/link-headings", endpoint=link_headings_endpoint, methods=["GET"]),
     Route("/api/vaults", endpoint=list_vaults_endpoint, methods=["GET"]),
     # ----------------------------------------------------------------------
     Route("/api/chat/confirm", endpoint=chat_confirm_endpoint, methods=["POST"]),

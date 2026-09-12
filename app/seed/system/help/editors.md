@@ -1,15 +1,24 @@
 ---
 title: Editoric Tools
-summary: What editor tools are and how they add custom commands to the edit-mode "/" menu.
+summary: What editor tools are and how they add custom commands to the edit-mode "/" menu, and how to build them.
 GenerateMetadata: false
 ---
+
+* [help](../help.md)
+    * [configurations](configurations.md) - How (and where) to configure things.
+    * [basics](basics.md) - The basics of using Tzara.
+    * [markdown-syntax](markdown-syntax.md) - The markdown you’ll use every day, shown by example.
+    * [frontmatter](frontmatter.md) - The metadata block at the top of a page, and what Tzara does with it.
+    * [jupyter](jupyter.md) - Jupyter integration details and examples.
+    * [agents](agents.md) - Creating agents and how they work
+    * **editors** - Custom “/” menu commands that transform text as you edit
 
 # What are editor tools?
 
 > "Agent is to Agentic as Editor is to Editoric."
 > -- Joe Coleman, circa 2026.
 
-![screenshot-slash-menu.png](screenshot-slash-menu.png){: style="float:right;border:3px double var(--base-color);padding:1em;"}
+![screenshot-slash-menu.png](screenshot-slash-menu.png){: style="float:right;border:3px double var(--base-color);padding:1em;margin:0.25em;"}
 
 An **editor** tool is a saved command you run from the **"/" menu while editing a page**. You select some text - or select nothing and just leave the caret where you want new text - then type `/` (or press `Ctrl+Shift+/`, which works anywhere, including mid-word), pick your tool, and an LLM does something useful: rewrites it, reformats it, writes the missing paragraph, or files it away as a note.
 
@@ -47,7 +56,7 @@ The system vault ships a few example editors under `editors/`. Open any of them 
 - **Decoder Ring** - a custom Python tool (ROT13) run in the isolated kernel.
 - **Add to Glossary** / **Research Note** - `operation: note` tools that keep a growing, memory-assimilated digest.
 
-# Seeing what's installed
+# Seeing what is installed
 
 The **[/editors](/editors)** page lists every editor tool with its description, its settings, and whether it's valid - including *why* an invalid one was rejected (a frontmatter mistake or a Python syntax error). It's the editor-tool counterpart to the `/agents` view.
 

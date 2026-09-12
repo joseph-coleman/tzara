@@ -359,6 +359,21 @@ def resolve_linkpath(target, source_dir, candidates=None, *, by_stem=None):
     return min(matches, key=lambda c: _proximity_key(c, source_dir))
 
 
+def shortest_linkpath(path, source_dir, *, by_stem):
+    """Shortest link text that resolves to ``path`` from ``source_dir`` -- Obsidian's
+    "shortest path when possible". Tries the bare basename, then ever longer
+    path-suffixes, falling back to an absolute (root-anchored) path. ``.md`` is
+    dropped; other files keep their extension, which is how a wikilink addresses
+    them. Shared by the move-rewriter and the editor's [[ autocomplete."""
+    link_path = path[:-3] if path.endswith(".md") else path
+    segs = link_path.split("/")
+    for i in range(1, len(segs) + 1):
+        cand = "/".join(segs[-i:])
+        if resolve_linkpath(cand, source_dir, by_stem=by_stem) == path:
+            return cand
+    return "/" + link_path
+
+
 def extract_embeds(text):
     """Extract embed targets from text."""
     return re.findall(EMBED_RE, text)

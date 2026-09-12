@@ -3,6 +3,7 @@
 # Public License v3.0 or later. See LICENSE.txt.
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import hashlib
 import logging
 import os
 import re
@@ -616,6 +617,18 @@ class WikiDoc:
         raw = WikiDoc._read_raw(abs_path)
         eol = "\r\n" if "\r\n" in raw else "\n"
         return raw.replace("\r\n", "\n"), eol
+
+    @staticmethod
+    def content_hash(text: str) -> str:
+        """sha256 of LF-normalized document text - the identity a stale-write check
+        compares, so a CRLF file and its LF browser round-trip hash the same."""
+        return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def disk_hash(vault_id: str, rel: str) -> str:
+        """content_hash of a vault document as it is on disk now; "" if absent."""
+        found = WikiDoc.read_text(vault_id, rel)
+        return WikiDoc.content_hash(found[0]) if found else ""
 
     @staticmethod
     def read_text_at(abs_path: str) -> str:

@@ -5,6 +5,18 @@ Tags: markdown, syntax, extensions, attributes, tables, footnotes, latex, admoni
 Summary: The document is a complete cheat‑sheet of every markdown feature Tzara supports, covering basic syntax (headings, links, images, tables, lists, code fences, LaTeX) and advanced extensions such as comments, attribute lists, page embeds, footnotes, Jupyter code blocks, smarty‑pants typographic replacements, and both Tzara and Obsidian‑style admonitions/callouts. Each feature is illustrated with example markup and its rendered output, and references to configuration via the python‑markdown extensions are provided.
 ---
 
+* [help](../help.md)
+    * [configurations](configurations.md) - How (and where) to configure things.
+    * [basics](basics.md) - The basics of using Tzara.
+    * [markdown-syntax](markdown-syntax.md) - The markdown you’ll use every day, shown by example.
+        * **complete markdown reference** - Even more markdown examples.
+    * [frontmatter](frontmatter.md) - The metadata block at the top of a page, and what Tzara does with it.
+    * [jupyter](jupyter.md) - Jupyter integration details and examples.
+    * [agents](agents.md) - Creating agents and how they work
+    * [editors](editors.md) - Custom “/” menu commands that transform text as you edit
+
+# Markdown Reference 
+
 This document is a complete reference sheet for every markdown syntax that Tzara supports.  And that I can remember.  Examples of markdown typically precede the result of what it generates.  Deviations from this pattern should be obvious. 
 
 Some of these features are from the extensions found in the `python-markdown` library.  See <https://python-markdown.github.io/extensions> for more details, and if you want to mess with stuff, look in `src/doctransform.py` for config information.

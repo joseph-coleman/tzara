@@ -2903,6 +2903,98 @@ pre.chat-code-proposal {
     font-style: italic;
 }
 
+/* ---- Palette (Mod-P, palette.js) ----
+   A native <dialog>: showModal() supplies the top layer, focus trap, Esc and
+   focus restore. Rows mirror .slash-menu. */
+dialog.palette {
+    width: min(40em, 92vw);
+    margin: 12vh auto auto;
+    padding: 0;
+    border: 1px solid var(--darker);
+    border-radius: var(--radius-md);
+    background: var(--bg-color);
+    color: var(--fg-color);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: var(--text-smd);
+    overflow: hidden;
+}
+
+dialog.palette::backdrop {
+    background: rgb(from var(--darkest) r g b / 0.35);
+}
+
+.palette-body {
+    display: flex;
+    flex-direction: column;
+    max-height: 70vh;
+}
+
+.palette-input {
+    flex: none;
+    margin: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--text-md);
+    color: var(--fg-color);
+    background: var(--lightest);
+    border: 1px solid var(--darker);
+    border-radius: var(--radius-sm);
+}
+
+.palette-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    list-style: none;
+    margin: 0;
+    padding: 0 0 var(--space-xs) 0;
+}
+
+/* One line per row, so the list never reflows under the pointer. */
+.palette-item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-md);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+
+.palette-item.active {
+    background: var(--lighter);
+}
+
+.palette-item.muted {
+    opacity: 0.5;
+    font-style: italic;
+    cursor: default;
+}
+
+.palette-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.palette-dir {
+    opacity: 0.6;
+}
+
+.palette-detail {
+    flex: none;
+    margin-left: auto;
+    font-size: var(--text-sm);
+    opacity: 0.6;
+}
+
+.palette-hint {
+    flex: none;
+    border-top: 1px solid var(--lighter);
+    padding: var(--space-xs) var(--space-md);
+    font-size: var(--text-sm);
+    opacity: 0.65;
+}
+
 /* Working indicator - shown inside the proposal widget while a tool-calling
    editor runs (before any text has streamed), so the wait doesn't read as a
    hang. The label carries the loop's own narration ("Searching the wiki…"). */

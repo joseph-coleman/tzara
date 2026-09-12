@@ -35,7 +35,7 @@ from contextvars import ContextVar
 
 from config import (DEFAULT_VAULT, USE_GIT_VERSIONING,
                     vault_abs_root, vault_root)
-from src.chunker import _key_segments, resolve_linkpath, wikilink_key
+from src.chunker import _key_segments, resolve_linkpath, shortest_linkpath, wikilink_key
 from src.rag_indexer import _get_pg_connection
 
 logger = logging.getLogger("content_ops")
@@ -143,18 +143,11 @@ def _dir(doc_id: str) -> str:
 
 def _shortest_link(new_id: str, source_dir: str, post_by_stem: dict, had_root: bool) -> str:
     """Shortest link text that resolves to ``new_id`` from ``source_dir`` under the
-    post-move vault -- Obsidian's "shortest path when possible". A link that was
-    written absolute stays absolute; otherwise try the bare basename, then ever
-    longer path-suffixes, falling back to an absolute (root-anchored) path."""
-    link_path = new_id[:-3] if new_id.endswith(".md") else new_id  # drop .md for docs
+    post-move vault (see chunker.shortest_linkpath). A link that was written
+    absolute stays absolute."""
     if had_root:
-        return "/" + link_path
-    segs = link_path.split("/")
-    for i in range(1, len(segs) + 1):
-        cand = "/".join(segs[-i:])
-        if resolve_linkpath(cand, source_dir, by_stem=post_by_stem) == new_id:
-            return cand
-    return "/" + link_path
+        return "/" + (new_id[:-3] if new_id.endswith(".md") else new_id)
+    return shortest_linkpath(new_id, source_dir, by_stem=post_by_stem)
 
 
 def _rewrite_text(text, pre_by_stem, post_by_stem, pre_dir, post_dir, rename_map, moved):

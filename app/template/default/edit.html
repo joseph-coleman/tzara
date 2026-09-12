@@ -17,6 +17,9 @@
 
     <script src="/template/{{theme}}/codemirror.bundle.js"></script>
     <script src="/template/{{theme}}/edit_assist.js"></script>
+    <script src="/template/{{theme}}/wikilink_complete.js"></script>
+    <script src="/template/{{theme}}/edit_keys.js"></script>
+    <script src="/template/{{theme}}/edit_draft.js"></script>
 
     <script>
     async function moveDocument(button){
@@ -232,6 +235,32 @@
             display: none;
         }
 
+        /* Recovered-draft / other-tab / save-conflict notice above the editor.
+           Same shape as .agent-owned-banner in tzara.css. */
+        #edit_banner {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: var(--space-sm);
+            border: 1px solid var(--color-warning);
+            border-left-width: 4px;
+            border-radius: var(--radius-sm);
+            background: var(--color-warning-bg);
+            padding: var(--space-sm) var(--space-md);
+            margin: var(--space-xs) 0 var(--space-sm) 0;
+            font-size: var(--text-smd);
+        }
+        #edit_banner[hidden] {
+            display: none;
+        }
+        #edit_banner.conflict {
+            border-color: var(--color-danger);
+            background: var(--color-danger-bg);
+        }
+        #edit_banner > span {
+            flex: 1 1 20em;
+        }
+
 
     </style>
 
@@ -257,13 +286,31 @@
         // (textarea correctly decodes HTML entities from the backend's escape() call)
         const initialDoc = document.getElementById("editor-initial-content").value;
 
+        const container = document.getElementById("editor-container");
+        const form = document.querySelector("form[name='edit_document_form']");
+        const baseHashInput = form.elements.base_hash;
+
+        // Unsaved-edit drafts in this browser (edit_draft.js). Null when the module
+        // or localStorage is unavailable; editing then works as before.
+        const draft = window.EditDraft && container.dataset.source
+            ? window.EditDraft.create({
+                  key: window.EditDraft.draftKey(container.dataset.vault,
+                                                 container.dataset.source,
+                                                 container.dataset.revision),
+                  initialDoc,
+                  baseHash: baseHashInput.value,
+                  onEvent: onDraftEvent,
+              })
+            : null;
+
         // Unified diff against the document as of page load. Held in a compartment so
         // toggling reconfigures the live view instead of rebuilding it: undo history,
         // cursor position and EditAssist state all survive. Unified (not MergeView's
         // side-by-side) because #document caps the editor at 800px, which leaves too
-        // few columns to split into two panes of wrapped markdown.
+        // few columns to split into two panes of wrapped markdown. A save conflict
+        // rebases it onto the file as it is on disk now.
         const diffCompartment = new Compartment();
-        const baselineDoc = initialDoc;
+        let baselineDoc = initialDoc;
         let diffOn = false;
 
         // Optional: Customizing the Python LanguageDescription to include 'jupyter'
@@ -301,10 +348,16 @@
                         ...foldKeymap,
                         { key: "Mod-Shift-d", run: () => { setDiff(!diffOn); return true; } },
                         { key: "F7", run: goToNextChunk },
+                        { key: "Mod-s", run: () => { form.requestSubmit(); return true; } },
                     ]),
                     themeCompartment.of(getTheme()),
                     diffCompartment.of([]),
                     ...(window.EditAssist ? window.EditAssist.extension() : []),
+                    ...(window.EditKeys ? window.EditKeys.extension() : []),
+                    ...(draft ? [draft.extension] : []),
+                    ...(window.WikilinkComplete
+                        ? window.WikilinkComplete.extension(document.getElementById("editor-container").dataset)
+                        : []),
                     EditorView.lineWrapping,
                     EditorView.theme({
                         "&": { height: "100%" },
@@ -405,6 +458,7 @@
 
         // Expose globally for upload handler and preview
         window.cmView = cmView;
+        if (draft) draft.bind(cmView);
         new ResizeObserver(() => cmView.requestMeasure()).observe(document.getElementById("editor-container"));
 
         // --- Unified diff toggle ---------------------------------------------
@@ -465,11 +519,135 @@
             });
         });
 
-        // Populate hidden input on form submit so the markdown field is POSTed
-        document.querySelector("form[name='edit_document_form']")
-            .addEventListener("submit", () => {
-                document.getElementById("editor-hidden-input").value = cmView.state.doc.toString();
+        // --- Banner: recovered drafts, other tabs, save conflicts --------------
+        const banner = document.getElementById("edit_banner");
+
+        function showBanner(message, actions, tone) {
+            const text = document.createElement("span");
+            text.textContent = message;
+            banner.replaceChildren(text, ...actions.map(([label, onClick]) => {
+                const button = document.createElement("button");
+                button.type = "button";              // inside the form: never a submit
+                button.textContent = label;
+                button.addEventListener("click", onClick);
+                return button;
+            }));
+            banner.classList.toggle("conflict", tone === "conflict");
+            banner.hidden = false;
+        }
+
+        function hideBanner() {
+            banner.hidden = true;
+            banner.replaceChildren();
+        }
+
+        const dismiss = ["Dismiss", hideBanner];
+        // A reload re-reads the page from disk; say so when it costs this tab's edits.
+        const reload = () => [
+            cmView.state.doc.toString() !== initialDoc ? "Reload (drops this tab's changes)" : "Reload",
+            () => window.location.reload(),
+        ];
+
+        function onDraftEvent(kind) {
+            if (kind === "saved") {
+                showBanner("This page was saved from another tab, so this copy is out of date. "
+                           + "Saving here will check for conflicts first.", [reload(), dismiss]);
+            } else if (kind === "taken") {
+                showBanner("This page has newer unsaved changes in another tab.", [reload(), dismiss]);
+            } else if (kind === "discarded") {
+                showBanner("Unsaved changes to this page were discarded in another tab. "
+                           + "This copy keeps its own.", [dismiss]);
+            } else if (kind === "withdrawn") {
+                hideBanner();
+            } else if (kind === "full") {
+                showBanner("This browser's storage is full, so no draft of this page is being kept.",
+                           [dismiss]);
+            }
+        }
+
+        function restoreDraft() {
+            const record = draft.takeOffer();
+            hideBanner();
+            if (!record) return;
+            cmView.dispatch({
+                changes: { from: 0, to: cmView.state.doc.length, insert: record.text },
+                userEvent: "input.restore",         // one undo step back to the page as loaded
             });
+            setDiff(true);                          // show exactly what came back
+            cmView.focus();
+        }
+
+        if (draft && draft.offered()) {
+            const age = window.EditDraft.describeAge(Date.now() - draft.offered().at);
+            showBanner("Unsaved changes from " + age + " were found for this page."
+                       + (draft.decision === "offer-stale" ? " The page has changed since they were made." : ""),
+                       [["Restore", restoreDraft],
+                        ["Discard", () => { draft.discard(); hideBanner(); }]]);
+        }
+
+        // --- Save ----------------------------------------------------------------
+        // Posted with fetch so a conflict (409: the file changed on disk since this
+        // page loaded) leaves the editor open. Delete stays a plain form POST.
+        const saveButton = form.querySelector("input[type='submit']");
+        let saving = false;
+
+        // Rebase onto the file as it is on disk now: the next save is checked
+        // against its hash, and the diff compares against its text.
+        function rebase(conflict, showDiff) {
+            baseHashInput.value = conflict.base_hash;
+            if (draft) draft.setBase(conflict.base_hash);
+            baselineDoc = conflict.current;
+            if (showDiff) setDiff(true);
+        }
+
+        function showConflict(conflict) {
+            showBanner("This page changed on disk after you opened it.", [
+                ["Show differences", () => {
+                    rebase(conflict, true);
+                    showBanner("Showing differences from the version on disk now. "
+                               + "Reject a change to take the disk version, then Save.", [dismiss]);
+                }],
+                ["Save anyway", () => {
+                    rebase(conflict, false);
+                    hideBanner();
+                    form.requestSubmit();
+                }],
+            ], "conflict");
+        }
+
+        form.addEventListener("submit", async (event) => {
+            document.getElementById("editor-hidden-input").value = cmView.state.doc.toString();
+            if (event.submitter && event.submitter.name === "delete_button") {
+                if (draft) draft.forget();
+                return;
+            }
+            event.preventDefault();
+            if (saving) return;
+            saving = true;
+            saveButton.disabled = true;
+            try {
+                const body = new FormData(form);
+                body.set("redirect", "false");
+                const response = await fetch(form.action, { method: "POST", body });
+                if (response.status === 204) {
+                    if (draft) draft.markSaved();
+                    window.location.href = "/" + form.elements.document_name.value;
+                    return;
+                }
+                if (response.status === 409) {
+                    showConflict(await response.json());
+                } else {
+                    showBanner("Save failed (HTTP " + response.status + "). "
+                               + "Your changes are still in the editor.", [dismiss], "conflict");
+                }
+            } catch (e) {
+                showBanner("Save failed: " + e.message + ". Your changes are still in the editor.",
+                           [dismiss], "conflict");
+            } finally {
+                saving = false;
+                saveButton.disabled = false;
+            }
+        });
 
         cmView.focus();
     });
@@ -495,8 +673,10 @@
 
     <form action="/save/" method="post" name="edit_document_form">
         <textarea id="editor-initial-content" style="display:none">{{document}}</textarea>
-        <div id="editor-container" style="resize:both; overflow:hidden; height:50vh; min-height:80px; border:1px solid var(--darker);"></div>
+        <div id="edit_banner" role="status" hidden></div>
+        <div id="editor-container" data-vault="{{vault}}" data-source="{{move_source_rel}}" data-revision="{{revision or ''}}" style="resize:both; overflow:hidden; height:50vh; min-height:80px; border:1px solid var(--darker);"></div>
         <input type="hidden" name="markdown" id="editor-hidden-input" value="">
+        <input type="hidden" name="base_hash" value="{{base_hash}}">
         <br />
         <input type="submit" value="Save" />
         <input type="hidden" name="document_name" value="{{file_path}}">

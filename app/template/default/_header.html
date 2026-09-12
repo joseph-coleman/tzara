@@ -24,23 +24,25 @@
         already in scope, so resolve it here rather than have every route pass it. #}
     {% set home = vault_default_page(v) %}
     <ul class="menu">
+        {# data-command lists a link in the Mod-P palette (palette.js); #nav_edit is
+           also Mod-E's target, so Mod-E works exactly where this Edit link shows. #}
         {% if document_mode == "edit" %}
-        <li><a href="/wiki/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">View</a></li>
+        <li><a data-command="View page" href="/wiki/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">View</a></li>
         {% elif document_mode == "view" and not hide_edit_link %}
-        <li><a href="/edit/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">Edit</a></li>
+        <li><a id="nav_edit" data-command="Edit page" href="/edit/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">Edit</a></li>
         {% endif %}
         {% if has_history %}
-        <li><a href="/history/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}">History</a></li>
+        <li><a data-command="Page history" href="/history/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}">History</a></li>
         {% endif %}
         <!-- {% if document_mode == "view" and not hide_edit_link and page_name %}
         <li><a href="/graph/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}">Local Graph</a></li>
         {% endif %} -->
-        <li><a href="/wiki/{{v}}/{{home|urlencode}}">{{home|e}}</a></li>
-        <li><a href="/index/{{v}}/">Index</a></li>
-        <li><a href="/graph/{{v}}">Graph</a></li>
-        <li><a href="#" onclick="return newCanvas('{{v}}')">Canvas</a></li>
-        <li><a href="/chat/{{v}}">Chat</a></li>
-        <li><a href="/wiki/{{system_vault}}/help">Help</a></li>
+        <li><a data-command="Start page" href="/wiki/{{v}}/{{home|urlencode}}">{{home|e}}</a></li>
+        <li><a data-command="Index" href="/index/{{v}}/">Index</a></li>
+        <li><a data-command="Graph" href="/graph/{{v}}">Graph</a></li>
+        <li><a data-command="New canvas" href="#" onclick="return newCanvas('{{v}}')">Canvas</a></li>
+        <li><a data-command="Chat" href="/chat/{{v}}">Chat</a></li>
+        <li><a data-command="Help" href="/wiki/{{system_vault}}/help">Help</a></li>
 
         <li class="vault-switcher">
             <details class="vault-dropdown" id="vault-dropdown">
@@ -135,3 +137,4 @@
     });
   })();
 </script>
+<script src="/template/{{theme}}/palette.js" data-vault="{{v}}"></script>

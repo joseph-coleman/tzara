@@ -1,3 +1,20 @@
+---
+title: Jupyter
+Summary: Pages can be interactive with an integrated Jupyter server.
+GenerateMetadata: false
+---
+
+* [help](../help.md)
+    * [configurations](configurations.md) - How (and where) to configure things.
+    * [basics](basics.md) - The basics of using Tzara.
+    * [markdown-syntax](markdown-syntax.md) - The markdown you’ll use every day, shown by example.
+    * [frontmatter](frontmatter.md) - The metadata block at the top of a page, and what Tzara does with it.
+    * **jupyter** - Jupyter integration details and examples.
+    * [agents](agents.md) - Creating agents and how they work
+    * [editors](editors.md) - Custom “/” menu commands that transform text as you edit
+
+# Interactivity
+
 Tzara supports inline python execution via a jupyter server.  If you have a snippet of python code, you can mark it as executable by denoting it as a `jupyter` block in your markdown.
 
 ````markdown

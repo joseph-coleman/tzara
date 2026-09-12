@@ -1,3 +1,19 @@
+---
+title: Agents
+Summary: Agents in Tzara, what they are, how they function, and how to build them
+GenerateMetadata: false
+---
+
+* [help](../help.md)
+    * [configurations](configurations.md) - How (and where) to configure things.
+    * [basics](basics.md) - The basics of using Tzara.
+    * [markdown-syntax](markdown-syntax.md) - The markdown you’ll use every day, shown by example.
+    * [frontmatter](frontmatter.md) - The metadata block at the top of a page, and what Tzara does with it.
+    * [jupyter](jupyter.md) - Jupyter integration details and examples.
+    * **agents** - Creating agents and how they work
+    * [editors](editors.md) - Custom “/” menu commands that transform text as you edit
+
+
 # What are agents?
 
 An agent is just a clever way of having an agent talk to itself with the capability of calling some external tool that can do something. 

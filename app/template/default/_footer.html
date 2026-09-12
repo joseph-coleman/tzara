@@ -22,7 +22,7 @@
         <li><a href="/history/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}">History</a></li>
         {% endif %}
         {% if show_raw %}
-        <li><a href="/raw/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}" download="{{page_name}}.md">Raw</a></li>
+        <li><a data-command="Download raw markdown" href="/raw/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}" download="{{page_name}}.md">Raw</a></li>
         {% endif %}
         
         {# Start page name is per-vault (.tzara/config.json `default_page`); `v` is
@@ -32,15 +32,19 @@
         <li><a href="/index/{{v}}">Index</a></li>
         <li><a href="#" onclick="return newCanvas('{{v}}')">Canvas</a></li>
         
-        <li><a href="/manage/jupyter">Kernels</a></li>
+        {# data-command: listed in the Mod-P palette (palette.js). The links the
+           header already carries are tagged there, not here. #}
+        <li><a data-command="Kernels" href="/manage/jupyter">Kernels</a></li>
         {% if has_jupyter %}{% endif %}
-        <li><a href="/manage/models" >Models</a></li>
-        <li><a href="/manage/tasks" >Tasks</a></li>
+        <li><a data-command="Models" href="/manage/models" >Models</a></li>
+        <li><a data-command="Tasks" href="/manage/tasks" >Tasks</a></li>
         <li>{{ nav_badge.link('/manage/monitor', 'Monitor', 'monitor',
-                              'System health - failures needing attention', 'alert') }}</li>
+                              'System health - failures needing attention', 'alert',
+                              command='Monitor') }}</li>
         <li>{{ nav_badge.link('/agents', 'Agents', 'agents',
-                              'Agent activity - staged proposals awaiting review') }}</li>
-        <li><a href="/editors" title="Editor tools: validity + settings">Editors</a></li>
+                              'Agent activity - staged proposals awaiting review',
+                              command='Agents') }}</li>
+        <li><a data-command="Editor tools" href="/editors" title="Editor tools: validity + settings">Editors</a></li>
         <li><a href="/wiki/{{system_vault}}/help">Help</a></li>
   </ul>
   </nav>

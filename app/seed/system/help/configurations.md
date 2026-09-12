@@ -1,8 +1,18 @@
 ---
 title: Configurations
-AutoTags: tzara, configuration, docker, environment-variables, obsidian-vault, llm, agents, timezone
-Summary: Tzara’s configuration is divided among a global .env file (defining Docker compose paths, vault locations, timezone, LLM models, etc.), app/config.py (defaults for versioning, auto‑tags, timestamps, indexing, and other options), and optional per‑vault .tzara/config.json overrides for display name, default page, theme, colors, and timestamps. Background agents and the ability for LLM‑generated Python code to run are off by default and can be enabled via the same .env or config settings, while Docker compose files handle container setup and the TZ variable sets the system timezone.
+AutoTags: tzara, configuration, docker, llm, agents, vault, theming
+Summary: Tzara is configured through a site‑wide .env file (used by Docker and app/config.py), the config.py settings, and optional per‑vault .tzara/config.json overrides for display name, theme, colors, and timestamps. The .env highlights include timezone, vault locations, LLM and embedding models, while config.py controls versioning, automatic tags and summaries, front‑matter timestamps, and optional agent/event features that are disabled by default. Docker compose files and a provided Jupyter cell for listing supported timezones complete the configuration setup.
+GenerateMetadata: false
 ---
+
+* [help](../help.md)
+    * **configurations** - How (and where) to configure things.
+    * [basics](basics.md) - The basics of using Tzara.
+    * [markdown-syntax](markdown-syntax.md) - The markdown you’ll use every day, shown by example.
+    * [frontmatter](frontmatter.md) - The metadata block at the top of a page, and what Tzara does with it.
+    * [jupyter](jupyter.md) - Jupyter integration details and examples.
+    * [agents](agents.md) - Creating agents and how they work
+    * [editors](editors.md) - Custom “/” menu commands that transform text as you edit
 
 # Configuring Tzara
 

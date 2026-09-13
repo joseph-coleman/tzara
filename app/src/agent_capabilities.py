@@ -191,8 +191,8 @@ def _list_owned_area(vault_id: str, prefix: str, tag: str,
     `tag` cannot be honored (no document_tags rows), `title` is the filename stem
     rather than frontmatter, and logs are omitted unless asked for.
     """
-    from config import AGENT_LOGS_SUBDIR, vault_abs_root
-    from src import timefmt, vault_index
+    from config import AGENT_LOGS_SUBDIR
+    from src import vault_index
 
     logs_seg = f"/{AGENT_LOGS_SUBDIR}/"
     want_logs = logs_seg in f"/{prefix}" or prefix.endswith(f"/{AGENT_LOGS_SUBDIR}")
@@ -207,16 +207,9 @@ def _list_owned_area(vault_id: str, prefix: str, tag: str,
     if after.strip():                          # keyset: resume strictly past `after`
         matched = [p for p in matched if p > after.strip()]
 
-    root = vault_abs_root(vault_id)
-    rows = []
-    for rel in matched[:limit]:
-        try:
-            updated = timefmt.iso_local(os.path.getmtime(os.path.join(root, rel)))
-        except OSError:                        # listed then removed - report the row
-            updated = None
-        rows.append({"doc_id": rel,
-                     "title": os.path.basename(rel)[:-3],
-                     "updated_at": updated})
+    # Same row shape as the indexed branch - no date, for the reason given there.
+    rows = [{"doc_id": rel, "title": os.path.basename(rel)[:-3]}
+            for rel in matched[:limit]]
 
     notes = ["agent-owned area: titles are filenames; use read_document for content"]
     if n_logs_hidden:
@@ -278,15 +271,13 @@ def list_documents(vault_id: str, path_prefix: str = "", tag: str = "",
         cur.execute(f"SELECT COUNT(*) AS n FROM documents d WHERE {count_where}", binds)
         count_row = cur.fetchone()
         total = count_row["n"] if count_row else 0
+        # No date column: documents.updated_at is when THIS install last indexed
+        # the page (every reindex resets it), not an edit date - and no local
+        # timestamp survives syncing a vault between machines.
         cur.execute(
-            f"SELECT d.doc_id, d.title, d.updated_at FROM documents d "
+            f"SELECT d.doc_id, d.title FROM documents d "
             f"WHERE {page_where} ORDER BY d.doc_id LIMIT %s", page_binds + [limit])
-        rows = []
-        for r in cur.fetchall():
-            d = dict(r)
-            if d.get("updated_at") is not None:
-                d["updated_at"] = d["updated_at"].isoformat()
-            rows.append(d)
+        rows = [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
 
@@ -302,6 +293,19 @@ def list_documents(vault_id: str, path_prefix: str = "", tag: str = "",
 READ_DOC_DEFAULT_CHARS = 8000
 READ_DOC_MIN_CHARS = 200
 READ_DOC_MAX_CHARS = 20000
+
+
+def window_text(text: str, max_chars: int = READ_DOC_DEFAULT_CHARS) -> str:
+    """`text` cut to `max_chars`, keeping BOTH ends - see read_document."""
+    if len(text) <= max_chars:
+        return text
+    head = max_chars * 2 // 3          # bias to the top, but guarantee a tail slice
+    tail = max_chars - head
+    return (text[:head]
+            + f"\n\n…[elided {len(text) - max_chars} of {len(text)} chars from the "
+              f"MIDDLE; re-read with a larger max_chars (up to {READ_DOC_MAX_CHARS}) "
+              f"or call get_outline for structure]…\n\n"
+            + text[-tail:])
 
 
 def read_document(vault_id: str, doc_id: str,
@@ -323,15 +327,7 @@ def read_document(vault_id: str, doc_id: str,
         return f"(failed to read '{doc_id}': {e})"
     if text is None:
         return f"(document '{doc_id}' not found on disk)"
-    if len(text) <= max_chars:
-        return text
-    head = max_chars * 2 // 3          # bias to the top, but guarantee a tail slice
-    tail = max_chars - head
-    return (text[:head]
-            + f"\n\n…[elided {len(text) - max_chars} of {len(text)} chars from the "
-              f"MIDDLE; re-read with a larger max_chars (up to {READ_DOC_MAX_CHARS}) "
-              f"or call get_outline for structure]…\n\n"
-            + text[-tail:])
+    return window_text(text, max_chars)
 
 
 def get_outline(vault_id: str, doc_id: str) -> str:

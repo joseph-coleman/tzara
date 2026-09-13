@@ -292,6 +292,33 @@ def _range_windows(actx: "AssistContext") -> tuple[str, str]:
     return _windows_at(actx.content, start)[0], _windows_at(actx.content, end)[1]
 
 
+_LEADING_BLANK_LINES_RE = re.compile(r"(?:[ \t]*\r?\n)*")
+_TRAILING_BLANK_LINES_RE = re.compile(r"(?:\r?\n[ \t]*)*$")
+
+
+def section_range(content: str, cursor: int) -> dict | None:
+    """The range a `scope: section` tool works on: the text of the innermost
+    section at the caret, its heading line excluded (nested subsections are
+    part of it - see md_sections.parse_sections). {"from", "to", "heading"},
+    offsets into `content`; None when the caret is in the frontmatter.
+
+    Blank lines at either end are left out of the range, so a replacement
+    can't weld onto the heading below it. A section with no text collapses to
+    the point just after its heading line.
+    """
+    from src import md_sections
+    s = md_sections.section_at(content, max(0, min(cursor, len(content))))
+    if s is None:
+        return None
+    start, end = s["content_start"], s["content_end"]
+    body = content[start:end]
+    if not body.strip():
+        return {"from": start, "to": start, "heading": s["heading"]}
+    lead = _LEADING_BLANK_LINES_RE.match(body).end()
+    trail = len(body) - _TRAILING_BLANK_LINES_RE.search(body).start()
+    return {"from": start + lead, "to": end - trail, "heading": s["heading"]}
+
+
 # Providers return a {"ctx": dict, "sources": list[dict]} envelope.
 # `ctx` is merged into the dict that user_template receives. `sources` is
 # concatenated across providers and emitted to the UI as a one-shot event.
@@ -708,17 +735,30 @@ _SEAM_ANCHOR = {
 }
 
 
-def _seam_windows(actx: "AssistContext", operation: str) -> tuple[str, str]:
+def _seam_windows(actx: "AssistContext", operation: str,
+                  scope: str | None = None) -> tuple[str, str]:
     """(before, after) at the point where `operation`'s result will land.
 
     Falls back to the windows the client shipped when the buffer or the offset
     isn't available, so a partial payload degrades instead of raising.
+
+    A `section` range runs from just below its heading to the end of its text,
+    so the side facing a heading is a block boundary by construction: `prepend`
+    lands directly under the heading line and needs a blank line only toward the
+    text below it, `append` only toward the text above it. Reporting that side
+    as empty tells _pad_insert_seam exactly that.
     """
     attr = _SEAM_ANCHOR.get(operation)
     pos = getattr(actx, attr) if attr else None
     if actx.content is None or pos is None:
         return actx.before, actx.after
-    return _windows_at(actx.content, pos)
+    before, after = _windows_at(actx.content, pos)
+    if scope == "section":
+        if operation == "prepend":
+            return "", after
+        if operation == "append":
+            return before, ""
+    return before, after
 
 
 def _pad_insert_seam(text: str, before: str, after: str) -> str:
@@ -808,6 +848,59 @@ _PLACEMENT_HINT = {
     "prepend": "Your result will be placed immediately BEFORE this text.",
     "append": "Your result will be placed immediately AFTER this text.",
 }
+
+# `choices: N` tools ask for N alternatives in ONE model call - the model is a
+# single shared resource, so N calls would cost N times the wait - separated by
+# a marker line in the style of <<CURSOR>>. The terminal text is split on it.
+_CHOICE_MARKER = "<<NEXT>>"
+_CHOICE_SPLIT_RE = re.compile(r"^[ \t]*<<NEXT>>[ \t]*$", re.MULTILINE)
+
+
+def _choices_instruction(n: int) -> str:
+    return (f"\n\nWrite {n} different alternatives, each one a complete result on "
+            f"its own. Put a line containing only {_CHOICE_MARKER} between each "
+            "alternative and the next. Do not number, label or introduce them.")
+
+
+def _split_choices(text: str, limit: int) -> list[str]:
+    """The alternatives in a `choices:` reply, at most `limit`, empties dropped.
+    A reply without the marker is ONE alternative - shown as an ordinary
+    proposal rather than lost."""
+    parts = (p.strip("\r\n") for p in _CHOICE_SPLIT_RE.split(text or ""))
+    return [p for p in parts if p.strip()][:limit]
+
+
+# Reads an editor tool may aim at the page being edited. The copy on disk can be
+# behind what's on screen, so those calls are answered from the live buffer.
+_BUFFER_READS = ("read_document", "get_outline")
+
+
+def _names_current_doc(args: dict | None, doc_id: str | None) -> bool:
+    """Whether a read_document/get_outline call names the page being edited."""
+    if not doc_id:
+        return False
+    from src.agent_capabilities import _doc_id
+    try:
+        target = _doc_id(str((args or {}).get("doc_id") or ""))
+    except Exception:
+        return False
+    return bool(target) and target.casefold() == doc_id.casefold()
+
+
+def _read_live_buffer(name: str, args: dict | None, content: str) -> str:
+    """read_document / get_outline for the page being edited, answered from the
+    unsaved buffer. Args go through the same schema and coercer as a disk read."""
+    from src import md_sections
+    from src.agent_capabilities import (READ_DOC_DEFAULT_CHARS, _registry,
+                                        _validate_args, window_text)
+    kwargs, errors = _validate_args(_registry()[name]["def"], args or {})
+    if errors:
+        return f"{name}: " + "; ".join(errors)
+    if name == "get_outline":
+        return (md_sections.build_outline(md_sections.parse_sections(content))
+                or "(document has no headings)")
+    return ("(This is the page being edited - its current, unsaved text.)\n\n"
+            + window_text(content, kwargs.get("max_chars", READ_DOC_DEFAULT_CHARS)))
 
 # A model told to "output only the text" often still wraps the whole reply in a
 # bare ``` fence (quoting habit). Inserted literally that corrupts the document,
@@ -1534,7 +1627,8 @@ def list_commands(vault: str | None = None) -> list[dict]:
                 "label": tool.label,
                 "description": tool.description,
                 # scope IS the range the frontend gathers & applies to - the two
-                # vocabularies are 1:1 ("selection" | "document" | "cursor"), and
+                # vocabularies are 1:1 ("selection" | "document" | "cursor" |
+                # "section"), and
                 # parse-time validation against _VALID_SCOPES already dropped
                 # anything else (invalid tools are skipped above).
                 "range_source": tool.scope,
@@ -1763,18 +1857,33 @@ async def _run_editor_tool(llm_mgr, slug: str, actx: "AssistContext"):
         yield _sse({"error": f"Editor tool '{slug}' is not available in this vault"})
         return
 
-    # Input span: selection tool -> the highlighted text; document tool -> the
-    # whole unsaved buffer (the buffer is authoritative for the current doc,
-    # which is why read_document/get_outline are NOT granted to editor tools).
-    # A cursor tool has NO input span - nothing is selected - so it has nothing
-    # to validate here; its context is the caret neighborhood, rendered below
-    # through the same tiered _build_doc_context the built-in continuations use.
+    # Input span: selection tool -> the highlighted text; section tool -> the text
+    # of the section under the caret; document tool -> the whole unsaved buffer.
+    # The buffer is authoritative for the current doc, which is why a
+    # read_document/get_outline call naming this page is answered from it rather
+    # than from disk (see _execute). A cursor tool has NO input span - nothing is
+    # selected - so it has nothing to validate here; its context is the caret
+    # neighborhood, rendered below through the same tiered _build_doc_context the
+    # built-in continuations use.
     scope = tool_def.scope
+    section = None
     if scope == "cursor":
         if content is None or actx.cursor_offset is None:
             yield _sse({"error": "Missing document content or cursor position"})
             return
         input_text = ""
+    elif scope == "section":
+        if content is None or actx.cursor_offset is None:
+            yield _sse({"error": "Missing document content or cursor position"})
+            return
+        # Recomputed from the same buffer and caret the client used to place the
+        # range, so the heading and text can't disagree with it. An empty section
+        # is allowed: "draft this section" is a real tool.
+        section = section_range(content, actx.cursor_offset)
+        if section is None:
+            yield _sse({"error": "The caret isn't in a section of this page"})
+            return
+        input_text = content[section["from"]:section["to"]]
     elif scope == "selection":
         input_text = selection
         if not input_text.strip():
@@ -1878,6 +1987,9 @@ async def _run_editor_tool(llm_mgr, slug: str, actx: "AssistContext"):
             return recall_text(read_agent_ledgers(vault, f"editors/{slug}"),
                                kwargs.get("ledger", ""),
                                kwargs.get("max_rows", RECALL_DEFAULT_ROWS))
+        if name in _BUFFER_READS and content is not None \
+                and _names_current_doc(args, actx.doc_id):
+            return _read_live_buffer(name, args, content)
         return await cap_map[name]["execute"](name, args, vault, status_cb)
 
     # The user message is assembled BEFORE the system prompt because the output
@@ -1899,10 +2011,18 @@ async def _run_editor_tool(llm_mgr, slug: str, actx: "AssistContext"):
             tool_def.operation, _CURSOR_TASK["insert"])
         has_context = True
     else:
-        label = "selected text" if scope == "selection" else "document"
+        if scope == "section":
+            where = ("the text above the page's first heading"
+                     if section["heading"] == "(top)"
+                     else f"the section under the heading `{section['heading']}`")
+            user_msg = (f"Apply your directive to {where}:\n```\n" + input_text + "\n```"
+                        if input_text.strip()
+                        else f"Apply your directive to {where}. It has no text yet.")
+        else:
+            label = "selected text" if scope == "selection" else "document"
+            user_msg = (f"Apply your directive to the following {label}:\n```\n"
+                        + input_text + "\n```")
         log_input = input_text
-        user_msg = (f"Apply your directive to the following {label}:\n```\n"
-                    + input_text + "\n```")
         hint = _PLACEMENT_HINT.get(tool_def.operation)
         if hint:
             user_msg += "\n\n" + hint
@@ -1911,6 +2031,8 @@ async def _run_editor_tool(llm_mgr, slug: str, actx: "AssistContext"):
     system = (tool_def.prompt.strip()
               + _editor_output_guard(tool_def.operation, has_context)
               + _voice_hint(frontmatter))
+    if tool_def.choices > 1:
+        system += _choices_instruction(tool_def.choices)
     if tool_defs:
         system += "\n\n" + _build_tools_text(tool_defs)
 
@@ -2055,20 +2177,29 @@ async def _run_editor_tool(llm_mgr, slug: str, actx: "AssistContext"):
                                  "result (reached its step limit). Try a simpler request."})
             return
 
-        clean = run_result.final_text or ""
-        if "## Available Tools" in clean:   # tool-list regurgitation
-            clean = ""
-        clean = _strip_caret_marker(_strip_outer_fence(clean))
-        if not clean.strip():
+        raw = run_result.final_text or ""
+        if "## Available Tools" in raw:   # tool-list regurgitation
+            raw = ""
+        # A `choices:` tool's reply holds several alternatives; each is cleaned
+        # like a single result would be, and duplicates collapse.
+        parts = (_split_choices(raw, tool_def.choices) if tool_def.choices > 1
+                 else [raw])
+        alts: list[str] = []
+        for part in parts:
+            text = _strip_caret_marker(_strip_outer_fence(part))
+            if text.strip() and text not in alts:
+                alts.append(text)
+        if not alts:
             yield _sse({"error": "The tool did not return any text."})
             return
         # An added block lands verbatim at its anchor; make sure it doesn't fuse
         # with the neighbors it now sits between. op:note goes to its own page and
         # op:replace swaps the span out - neither has a seam to protect. The
-        # anchor comes from the operation alone, so this needs no scope branch.
+        # anchor comes from the operation; only a section's heading side differs.
         if tool_def.operation in _ADDITIVE_OPS:
-            clean = _pad_insert_seam(
-                clean, *_seam_windows(actx, tool_def.operation))
+            seam = _seam_windows(actx, tool_def.operation, scope)
+            alts = [_pad_insert_seam(a, *seam) for a in alts]
+        clean = alts[0]
 
         # op:note routes the result to an external owned digest page (growing it
         # across calls) instead of applying it to the current document.
@@ -2091,7 +2222,10 @@ async def _run_editor_tool(llm_mgr, slug: str, actx: "AssistContext"):
             yield _sse({"done": True})
             return
 
-        yield _sse({"token": clean})
+        if len(alts) > 1:
+            yield _sse({"choices": alts})
+        else:
+            yield _sse({"token": clean})
         yield _sse({"done": True})
     finally:
         # Per-invocation log (opt-in `log:`) - covers every exit path (ok, error,

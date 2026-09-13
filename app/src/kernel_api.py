@@ -282,12 +282,16 @@ def _query_table(vault_id: str, table: str, select_sql: str, order_cols: list,
 
 
 def _op_query_documents(args: dict, vault_id: str) -> dict:
-    """One page of every page in the vault (no body/vector columns)."""
+    """One page of every page in the vault (no body/vector columns).
+
+    `indexed_at` is when THIS install last indexed the page. The table's
+    created_at/updated_at are left out: they read as page dates but are index
+    times too, and no local timestamp survives syncing a vault between machines."""
     return _query_table(
         vault_id, "documents",
-        "SELECT doc_id, title, doc_exists, rag_indexed, summary, created_at, updated_at",
+        "SELECT doc_id, title, doc_exists, rag_indexed, summary, indexed_at",
         ["doc_id"], _DOCUMENTS_LIMIT, after=args.get("after"),
-        iso_cols=("created_at", "updated_at"))
+        iso_cols=("indexed_at",))
 
 
 def _op_query_edges(args: dict, vault_id: str) -> dict:

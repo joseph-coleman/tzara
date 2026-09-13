@@ -81,6 +81,7 @@ Which text the tool reads, and therefore where in the "/" menu it can be used. E
 - `selection` - the highlighted text; the range is the selection. The menu item is unavailable until something is selected.
 - `document` - the whole unsaved buffer, frontmatter excluded; the range is the body. Always available.
 - `cursor` - **nothing is selected.** The tool reads the document *around the caret*, marked with `<<CURSOR>>`. The range is the block the caret sits in - see `operation` below. Always available.
+- `section` - the text under the heading the caret is in: everything below that heading up to the next heading of the same or a higher level, so its subsections come with it. The heading line itself is never part of the range. Text above the page's first heading counts as a section of its own. Always available.
 
 ```yaml
 scope: selection
@@ -113,19 +114,21 @@ operation: replace
 | write at the exact point I'm standing, possibly mid-sentence | `insert` |
 | collect something onto a separate page | `note` |
 
-### All fifteen combinations
+### All twenty combinations
 
 | `scope` \ `operation` | `replace` | `prepend` | `append` | `insert` | `note` |
 |---|---|---|---|---|---|
 | **`selection`** | replace the selection | before the selection | after the selection | at the caret | digest page |
 | **`document`** | replace the body | top of the body | end of the body | at the caret | digest page |
 | **`cursor`** | replace the block | before the block | after the block | at the caret | digest page |
+| **`section`** | replace the section's text | just under the heading | end of the section | at the caret | digest page |
 
-Examples down the diagonal: *"rewrite this to be funny"* (`selection`/`replace`), *"write a lede for this section"* (`selection`/`prepend`), *"extract bullet points as a summary"* (`document`/`append`), *"add a TL;DR at the top"* (`document`/`prepend`), *"reformat this paragraph"* (`cursor`/`replace`), *"continue this sentence"* (`cursor`/`insert`), *"list the key dates"* (`document`/`note`).
+Examples down the diagonal: *"rewrite this to be funny"* (`selection`/`replace`), *"write a lede for this section"* (`selection`/`prepend`), *"extract bullet points as a summary"* (`document`/`append`), *"add a TL;DR at the top"* (`document`/`prepend`), *"reformat this paragraph"* (`cursor`/`replace`), *"continue this sentence"* (`cursor`/`insert`), *"tighten this section"* (`section`/`replace`), *"list the key dates"* (`document`/`note`).
 
 Three details worth knowing:
 
 - **With `scope: cursor`, the range is the block the caret sits in** - the paragraph, list, or whole fenced code block. So `replace` reformats that paragraph without you selecting it, and `prepend`/`append` put text before or after the *whole* paragraph. If the caret isn't in a block (a blank line, an empty page), there is no range and all three behave like `insert`.
+- **With `scope: section`, the range is the text below the heading**, without the blank lines at its edges. So `replace` rewrites a section and leaves its title alone, `prepend` writes an intro just under the heading, and `append` adds to the end of the section. A heading with nothing under it yet works too - that is a *"draft this section"* tool.
 - **`insert` follows the caret, and the caret follows your mouse.** Selecting text leaves the caret at one *end* of the selection - which end depends on which way you dragged. So `selection` + `insert` lands before or after the selection accordingly. If you want a fixed side, that's what `prepend` and `append` are for.
 - **Blank lines are added for you.** When an added block lands at a block boundary, the separating blank line is inserted automatically - on whichever side needs it, including the leading side when you `append` to the very end of a document. Don't write prompt instructions about blank lines; models strip surrounding whitespace no matter what they're told, so this is handled in code instead.
 
@@ -144,16 +147,32 @@ operation: note
 output: Reading-journal.md
 ```
 
+### `choices`
+
+*default 1*
+
+Ask for several alternatives instead of one - a number from 2 to 5. The model writes them in a single reply, and the proposal shows one at a time with **‹ 2 of 3 ›** beside Accept/Reject: click the arrows or press **Alt-[** / **Alt-]** to switch, **Enter** accepts the one showing, **Esc** rejects them all. Everything else works as usual - `operation` still decides where the chosen text goes, and a long `replace` still gets change-by-change review.
+
+```yaml
+scope: selection
+operation: replace
+choices: 3
+```
+
+Best for short text where taste decides: a title, a headline, a lede, a closing line. Not available with `operation: note`, which files its result straight to a page with nothing to review. If the model writes fewer alternatives than asked for, you get the ones it wrote; a single one shows as an ordinary proposal.
+
 ### `capabilities`
 
 *default: none*
 
-A comma-separated list of internal tools to grant. Editors may grant only these four, the `recall` tool is automatic:
+A comma-separated list of internal tools to grant. Editors may grant the tools below; `recall` is granted automatically wherever ledgers are kept:
 
 | Name | What it does |
 |------|--------------|
 | `search_wiki` | Hybrid semantic + full-text search across the vault. |
 | `find_related` | Pages related to a given page via links, tags, embeddings. |
+| `read_document` | Read another page's markdown. For the page being edited it returns what's on screen, unsaved changes included. |
+| `get_outline` | A page's heading outline - for the page being edited, the outline of its unsaved text. |
 | `remember` | Append items to one of the tool's own append-only ledgers. |
 | `forget` | Delete a ledger that has served its purpose. |
 | `recall` | Read one ledger's rows, or list the ledgers held. Granted automatically wherever ledgers are kept. |
@@ -164,8 +183,8 @@ capabilities: search_wiki, remember
 
 `remember` and `forget` are not an exception to the read-only rule: they write **only** to the tool's own ledger under `_dada/editors/{slug}/`, never to your vault. `recall` only reads them, and needs no grant. See **Cross-invocation memory** below.
 
-> [!Info] Why so few?
-> An editor's job is to transform the text in front of you, not rewrite your vault. Write/propose tools and current-document readers (`read_document`, `get_outline`) are deliberately **excluded**: writes aren't an editor's remit, and the live buffer - not the on-disk copy - is what the tool should see.  Your live text is the editor's input.
+> [!Info] Why only readers?
+> An editor's job is to transform the text in front of you, not rewrite your vault, so apart from its own ledgers every tool it can be given only reads. `read_document` and `get_outline` read other pages from disk; for the page you are editing they return the live text instead, because that - not the last saved copy - is what the tool is working on.
 
 Unlike an agent, an editor tool **need not grant any tool at all** - a pure-prompt editor (no `capabilities`, no Python) is a perfectly valid saved prompt.
 
@@ -298,6 +317,7 @@ There are two pairs because there are **two positions**: the range your `operati
 | `document` (any op) | the start of the body - so `.before` is `""` | **no** - the caret is wherever you were standing |
 | `cursor` + `insert` / `note` | the caret (the range is empty) | **yes**, always - and `editor.selection` is `""` |
 | `cursor` + `replace` / `prepend` / `append` | the start of the **block** | **no** - the caret is somewhere inside that block |
+| `section` (any op) | the start of the section's text, just below its heading | **no** - the caret is somewhere in the section |
 
 Regarding the last row in the table above, with `scope: cursor` and a range operation, the range is the paragraph you're standing in, so `editor.selection` is that whole paragraph and `editor.before` stops at its first character - while `editor.before_cursor` runs all the way to where your caret actually is, part-way through it. Use `.before` / `.after` to reason about **what the tool will change**, and the `_cursor` pair to reason about **where the user was**.
 

@@ -55,27 +55,29 @@ logger = logging.getLogger("editor_registry")
 EDITORS_SUBDIR = "editors"
 
 # The curated set of built-in Tzara capabilities an editor-tool author may grant.
-# DELIBERATELY read-only and corpus-level (about OTHER documents): an editor's
-# only output is its accept/reject payload, so no writes are needed or allowed.
-# EXCLUDED on purpose:
-#   - read_document / get_outline: for the CURRENT doc these read stale on-disk
-#     state while the editor operates on the unsaved buffer (the buffer is handed
-#     in as the tool input instead); offering them invites disk-vs-buffer drift.
-#   - propose_create / propose_edit / propose_append / apply_wikilink: writes /
-#     staged mutations of other documents - out of an editor's remit entirely.
-# Granted-tool menu for editors. Read-only corpus tools, plus the two ledger
-# writers - which are NOT an exception to "editors don't get write tools": they
-# write only to the tool's OWN append-only ledger under _dada/editors/{slug}/,
+# DELIBERATELY read-only: an editor's only output is its accept/reject payload, so
+# no writes are needed or allowed.
+#   - read_document / get_outline read OTHER pages from disk. A call naming the
+#     page being edited is answered from the unsaved buffer instead (see
+#     edit_assist._execute) - the copy on disk can be behind what's on screen.
+#   - EXCLUDED: propose_* / apply_wikilink / remove_wikilink - writes or staged
+#     mutations of documents, out of an editor's remit entirely.
+# The two ledger writers are NOT an exception to "editors don't get write tools":
+# they write only to the tool's OWN append-only ledger under _dada/editors/{slug}/,
 # never to the vault, and their write is brokered to the worker like every other
 # owned-area write.
-EDITOR_CAPABILITIES = {"search_wiki", "find_related", "remember", "forget", "recall"}
+EDITOR_CAPABILITIES = {"search_wiki", "find_related", "read_document", "get_outline",
+                       "remember", "forget", "recall"}
 # The subset whose WRITES must be brokered rather than run in-process. `recall`
 # is deliberately absent: it only reads, so it needs no git and no worker. Do not
 # conflate this with agent_capabilities.LEDGER_TOOL_NAMES, which asks a different
 # question - who should have ledgers injected at all.
 EDITOR_LEDGER_CAPABILITIES = {"remember", "forget"}
 
-_VALID_SCOPES = ("selection", "document", "cursor")
+_VALID_SCOPES = ("selection", "document", "cursor", "section")
+# A `choices: N` tool proposes N alternatives in one reply and the user switches
+# between them in the preview. Past a handful, comparing them stops being useful.
+_MAX_CHOICES = 5
 # Where the result goes. Four of the five are RANGE-RELATIVE - they position
 # themselves against the range `scope` defines - and apply to the CURRENT doc via
 # the accept/reject overlay:
@@ -104,10 +106,13 @@ class EditorToolDef:
     #   "selection" - the highlighted text (menu item needs a non-empty selection)
     #   "document"  - the whole unsaved buffer, frontmatter excluded
     #   "cursor"    - nothing is selected; the caret neighborhood is the context
+    #   "section"   - the text under the heading the caret is in (the heading line
+    #                 itself stays out of the range; nested subsections are in)
     scope: str = "selection"
     # What happens to the result: swap the range out, add before/after it, drop it
     # at the caret, or file it away. See _VALID_OPERATIONS.
     operation: str = "replace"
+    choices: int = 1                # >1: propose that many alternatives to switch between
     output: str = "Notes.md"        # op:note target filename under _dada/editors/{slug}/
     capabilities: list = field(default_factory=list)  # granted built-in tool names (subset of EDITOR_CAPABILITIES)
     max_iterations: int = None      # tool-loop ceiling; None -> engine default (_EDITOR_MAX_ITERATIONS)
@@ -183,6 +188,20 @@ def parse_editor_file(slug: str, content: str) -> EditorToolDef:
         d.errors.append(f"operation {operation!r} must be one of {', '.join(_VALID_OPERATIONS)}")
     else:
         d.operation = operation
+
+    choices_raw = fm.get("choices", "").strip()
+    if choices_raw:
+        try:
+            choices = int(choices_raw)
+        except ValueError:
+            choices = 0
+        if not 1 <= choices <= _MAX_CHOICES:
+            d.errors.append(f"choices must be a whole number from 1 to {_MAX_CHOICES}")
+        else:
+            d.choices = choices
+    if d.choices > 1 and d.operation == "note":
+        d.errors.append("choices can't be combined with operation: note - a note is "
+                        "filed straight to its page, so there is no preview to choose in")
 
     # op:note target page (under the tool's owned _dada/editors/{slug}/ area).
     # Plain filename only - no path separators, no dotfiles (mirrors agent output).
@@ -268,7 +287,7 @@ def new_editor_template(slug: str, date: str = "") -> str:
 type: editor
 label: {name}
 description:
-# selection | document | cursor
+# selection | document | cursor | section
 scope: selection
 # replace | prepend | append | insert | note
 operation: replace
@@ -276,6 +295,7 @@ operation: replace
 # capabilities: search_wiki, find_related
 # vaults: main
 # max_iterations: 4
+# choices: 3
 # output: Notes.md
 # memory: true
 # log: true
@@ -295,15 +315,18 @@ text on its own.
 `scope` is what the tool RECEIVES: `selection` the highlighted
 text (the menu entry then needs a selection), `document` the whole
 unsaved buffer with frontmatter excluded, `cursor` nothing
-selected and the caret neighborhood as context. `operation` is
+selected and the caret neighborhood as context, `section` the
+text under the heading the caret is in. `operation` is
 what happens to its ANSWER: `replace` swaps the range out,
 `prepend` and `append` go just before or after it, `insert` lands
 at the caret and is the only one that can land mid-line, and
 `note` files the answer to a page of its own, leaving the
 document untouched.
-Commented out above: `capabilities` grants read-only corpus tools
-(search_wiki, find_related); `vaults` limits which vaults offer
-it; `max_iterations` caps the tool loop; `output` names the
+Commented out above: `capabilities` grants read-only tools
+(search_wiki, find_related, read_document, get_outline);
+`vaults` limits which vaults offer it; `max_iterations` caps the
+tool loop; `choices` asks for that many alternatives to switch
+between before accepting one; `output` names the
 `note` target under _dada/editors/{slug}/ ; `memory` remembers
 house style across invocations, shaped by the `# Memory Prompt`
 section below; `log` keeps a page per invocation.

@@ -2735,6 +2735,28 @@ pre.chat-code-proposal {
     background: var(--lightest);
 }
 
+/* "‹ 2 of 3 ›" switcher for editor tools that propose alternatives (`choices:`). */
+.cm-ai-choices {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-xxs);
+    margin-right: var(--space-xs);
+}
+
+.cm-ai-choice-step {
+    cursor: pointer;
+    padding: 0 var(--space-xxs);
+    border-radius: var(--radius-sm);
+}
+
+.cm-ai-choice-step:hover {
+    background: var(--lightest);
+}
+
+.cm-ai-choice-count {
+    opacity: 0.8;
+}
+
 /* Sources row - surfaces which corpus documents grounded the suggestion.
    Rendered for retrieval-using commands (e.g. continue_with_sources)
    alongside the proposal in both streaming and ready states. */

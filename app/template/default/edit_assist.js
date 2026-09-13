@@ -161,6 +161,8 @@
     const markNotice    = StateEffect.define();   // value: positive confirmation (op:note saved); persists until dismissed
     const toggleHunk    = StateEffect.define();   // value: hunk index; flips accept<->reject for that diff hunk
     const focusHunk     = StateEffect.define();   // value: hunk index to highlight (keyboard navigation)
+    const setChoices    = StateEffect.define();   // value: alternatives from a `choices:` editor tool
+    const cycleChoice   = StateEffect.define();   // value: +1 / -1 - show the next/previous alternative
 
     // --- StateField holding the pending suggestion (or null) -------------
     const suggestionField = StateField.define({
@@ -201,6 +203,19 @@
             value = { ...value, decisions };
           } else if (e.is(focusHunk) && value) {
             value = { ...value, focusIdx: e.value };
+          } else if (e.is(setChoices) && value) {
+            // The alternatives ARE the proposal: the one shown is proposedText,
+            // so preview, diff and accept all work on it unchanged.
+            const alts = (e.value || []).filter(t => typeof t === "string" && t);
+            value = { ...value, alternatives: alts, choiceIdx: 0,
+                      proposedText: alts[0] || "", statusText: "" };
+          } else if (e.is(cycleChoice) && value && value.alternatives
+                     && value.alternatives.length > 1) {
+            // Per-hunk decisions belong to the alternative they were made on.
+            const n = value.alternatives.length;
+            const idx = ((value.choiceIdx || 0) + e.value + n) % n;
+            value = { ...value, choiceIdx: idx, proposedText: value.alternatives[idx],
+                      decisions: {}, focusIdx: 0 };
           }
         }
         return value;
@@ -258,6 +273,8 @@
         return other.s.proposedText === this.s.proposedText
             && other.s.status       === this.s.status
             && other.s.operation    === this.s.operation
+            && (other.s.choiceIdx || 0) === (this.s.choiceIdx || 0)
+            && (other.s.alternatives?.length || 0) === (this.s.alternatives?.length || 0)
             && (other.s.statusText || "") === (this.s.statusText || "")
             && (other.s.sources?.length || 0) === (this.s.sources?.length || 0);
       }
@@ -361,6 +378,8 @@
             e.preventDefault();
             rejectSuggestion(view);
           });
+          const switcher = choiceSwitcher(view, this.s);
+          if (switcher) chip.appendChild(switcher);
           chip.appendChild(accept);
           chip.appendChild(reject);
           wrap.appendChild(chip);
@@ -667,12 +686,17 @@
     // line spells out the keyboard review controls.
     class DiffApplyWidget extends WidgetType {
       constructor(s) { super(); this.s = s; }
-      eq(o) { return o.s.proposedText === this.s.proposedText && o.s.status === this.s.status; }
+      eq(o) {
+        return o.s.proposedText === this.s.proposedText && o.s.status === this.s.status
+            && (o.s.choiceIdx || 0) === (this.s.choiceIdx || 0);
+      }
       toDOM(view) {
         const wrap = document.createElement("span");
         wrap.className = "cm-ai-proposal cm-ai-diff-chip";
         const chip = document.createElement("span");
         chip.className = "cm-ai-chip";
+        const switcher = choiceSwitcher(view, this.s);
+        if (switcher) chip.appendChild(switcher);
         const apply = document.createElement("button");
         apply.type = "button";
         apply.tabIndex = -1;
@@ -689,12 +713,51 @@
         chip.appendChild(cancel);
         const hint = document.createElement("span");
         hint.className = "cm-ai-diff-hint";
-        hint.textContent = "Tab/Shift-Tab : next/prev | Space : keep or apply | Enter : apply all | Esc : cancel";
+        hint.textContent = "Tab/Shift-Tab : next/prev | Space : keep or apply | Enter : apply all | Esc : cancel"
+          + (switcher ? " | Alt-[ / Alt-] : other choices" : "");
         wrap.appendChild(chip);
         wrap.appendChild(hint);
         return wrap;
       }
       ignoreEvent() { return false; }
+    }
+
+    // "‹ 2 of 3 ›" for a `choices:` editor tool, or null when there is only one
+    // proposal. Spans, not <button>s, for the same reason as the hunk toggle: the
+    // page's `#document button` rule would force the full button box onto them.
+    function choiceSwitcher(view, s) {
+      const alts = s.alternatives;
+      if (!alts || alts.length < 2) return null;
+      const box = document.createElement("span");
+      box.className = "cm-ai-choices";
+      const step = (glyph, dir, title) => {
+        const b = document.createElement("span");
+        b.setAttribute("role", "button");
+        b.className = "cm-ai-choice-step";
+        b.textContent = glyph;
+        b.title = title;
+        b.addEventListener("mousedown", e => {
+          e.preventDefault();
+          view.dispatch({ effects: cycleChoice.of(dir) });
+        });
+        return b;
+      };
+      const count = document.createElement("span");
+      count.className = "cm-ai-choice-count";
+      count.textContent = ((s.choiceIdx || 0) + 1) + " of " + alts.length;
+      box.appendChild(step("‹", -1, "Previous choice (Alt-[)"));
+      box.appendChild(count);
+      box.appendChild(step("›", +1, "Next choice (Alt-])"));
+      return box;
+    }
+
+    function cycleChoices(view, dir) {
+      const s = view.state.field(suggestionField, false);
+      if (!s || s.status !== "ready" || !s.alternatives || s.alternatives.length < 2) {
+        return false;
+      }
+      view.dispatch({ effects: cycleChoice.of(dir) });
+      return true;
     }
 
     function acceptSuggestion(view) {
@@ -791,6 +854,10 @@
           return true;
         },
       },
+      // Alternatives from a `choices:` tool. Returns false otherwise, so the
+      // keys keep whatever meaning they have when no alternatives are pending.
+      { key: "Alt-]", run(view) { return cycleChoices(view, +1); } },
+      { key: "Alt-[", run(view) { return cycleChoices(view, -1); } },
       {
         key: "Escape",
         run(view) {
@@ -890,6 +957,7 @@
       isEnabled(cmd) {
         if (cmd.range_source === "cursor")    return true;
         if (cmd.range_source === "document")  return true;  // operates on the whole buffer
+        if (cmd.range_source === "section")   return true;  // the section the caret is in
         if (cmd.range_source === "selection") return !this.view.state.selection.main.empty;
         return false;
       }
@@ -1320,6 +1388,25 @@
     }
 
     // --- Streaming a command ----------------------------------------------
+    // The range of a `scope: section` tool, {from, to, heading} in document
+    // coordinates, or null. Computed server-side by md_sections - the parser the
+    // agents' section tools use - so fences, LaTeX blocks and frontmatter are
+    // never mistaken for headings and the browser keeps no parser of its own.
+    async function fetchSectionRange(content, cursor) {
+      try {
+        const resp = await fetch("/api/edit/section-range", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content, cursor }),
+        });
+        if (!resp.ok) return null;
+        const r = await resp.json();
+        return (typeof r.from === "number" && typeof r.to === "number") ? r : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
     async function startAssist(view, cmd, instruction = "") {
       // Non-LLM kinds bypass the ghost-text streaming pipeline entirely.
       // They have their own UI flow (e.g. autolink renders a picker).
@@ -1384,6 +1471,29 @@
         // The range is the body for BOTH operations - the insert rule in
         // acceptSuggestion puts an insert at range.to, i.e. the end of the body.
         from = bodyStart; to = state.doc.length;
+      } else if (cmd.range_source === "section") {
+        // The text of the section the caret is in, heading line kept out of the
+        // range. The server recomputes the same range from the same buffer and
+        // caret, so the text it sends the model matches what is struck here.
+        content = state.doc.toString();
+        cursorOffset = head;
+        const sec = await fetchSectionRange(content, head);
+        if (view.state.doc !== state.doc) return;   // edited while we asked
+        if (!sec) {
+          view.dispatch({ effects: [
+            setSuggestion.of({
+              command: cmd.id, operation: cmd.operation,
+              range: { from: head, to: head }, insertAt: head, anchorPos: head,
+              originalText: "", proposedText: "", statusText: "",
+              status: "streaming", sources: null,
+            }),
+            markError.of("Couldn't find the section at the caret."),
+          ] });
+          return;
+        }
+        from = sec.from; to = sec.to;
+        selection = content.slice(from, to);
+        selStart = from; selEnd = to;
       } else {
         const sel = state.selection.main;
         if (sel.from === sel.to) return;
@@ -1467,6 +1577,9 @@
             try { evt = JSON.parse(line.slice(6)); } catch (e) { continue; }
             if (evt.token) {
               view.dispatch({ effects: appendToken.of(evt.token) });
+            } else if (Array.isArray(evt.choices)) {
+              // A `choices:` tool: every alternative at once, the first shown.
+              view.dispatch({ effects: setChoices.of(evt.choices) });
             } else if (evt.status) {
               // Tool-calling editor progress ("Searching the wiki…"); shown as a
               // working indicator until the transformed text streams in.

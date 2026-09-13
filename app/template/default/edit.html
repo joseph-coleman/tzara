@@ -290,9 +290,18 @@
         const form = document.querySelector("form[name='edit_document_form']");
         const baseHashInput = form.elements.base_hash;
 
+        // "Accept with edits": reviewing an agent's staged proposal (?staged=).
+        const staged = container.dataset.stagedRow ? {
+            row: Number(container.dataset.stagedRow),
+            run: container.dataset.stagedRun,
+            agent: container.dataset.stagedAgent,
+            note: container.dataset.stagedNote,
+        } : null;
+
         // Unsaved-edit drafts in this browser (edit_draft.js). Null when the module
-        // or localStorage is unavailable; editing then works as before.
-        const draft = window.EditDraft && container.dataset.source
+        // or localStorage is unavailable; editing then works as before. Never while
+        // reviewing a proposal: that text is the agent's, not an edit of yours.
+        const draft = !staged && window.EditDraft && container.dataset.source
             ? window.EditDraft.create({
                   key: window.EditDraft.draftKey(container.dataset.vault,
                                                  container.dataset.source,
@@ -310,7 +319,10 @@
         // few columns to split into two panes of wrapped markdown. A save conflict
         // rebases it onto the file as it is on disk now.
         const diffCompartment = new Compartment();
-        let baselineDoc = initialDoc;
+        // A review diffs the proposal against the page as it is on disk now.
+        let baselineDoc = staged
+            ? document.getElementById("editor-baseline-content").value
+            : initialDoc;
         let diffOn = false;
 
         // Optional: Customizing the Python LanguageDescription to include 'jupyter'
@@ -585,6 +597,16 @@
                         ["Discard", () => { draft.discard(); hideBanner(); }]]);
         }
 
+        if (staged) {
+            // What is highlighted is the agent's change; the merge controls drop
+            // any part of it, and anything can be edited before accepting.
+            setDiff(true);
+            showBanner("Reviewing " + staged.agent + "'s proposal"
+                       + (staged.note ? ": " + staged.note : "")
+                       + ". Drop or edit any change, then Accept.",
+                       [["Cancel", () => { window.location.href = "/agents"; }]]);
+        }
+
         // --- Save ----------------------------------------------------------------
         // Posted with fetch so a conflict (409: the file changed on disk since this
         // page loaded) leaves the editor open. Delete stays a plain form POST.
@@ -607,7 +629,7 @@
                     showBanner("Showing differences from the version on disk now. "
                                + "Reject a change to take the disk version, then Save.", [dismiss]);
                 }],
-                ["Save anyway", () => {
+                [staged ? "Accept anyway" : "Save anyway", () => {
                     rebase(conflict, false);
                     hideBanner();
                     form.requestSubmit();
@@ -626,6 +648,35 @@
             saving = true;
             saveButton.disabled = true;
             try {
+                if (staged) {
+                    // Accept the reviewed text through the inbox, not /save/: it
+                    // stays the agent's change (attribution, staging row, event).
+                    const response = await fetch("/api/agents/staging", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            action: "apply_edited", run_id: staged.run, ids: [staged.row],
+                            content: cmView.state.doc.toString(),
+                            expected_hash: baseHashInput.value,
+                        }),
+                    });
+                    if (response.ok) {
+                        window.location.href = "/agents";
+                        return;
+                    }
+                    if (response.status === 409) {
+                        const data = await response.json().catch(() => ({}));
+                        if (data.status === "drift") {
+                            showConflict(data);
+                            return;
+                        }
+                    }
+                    showBanner("This proposal can't be accepted from here any more - it may "
+                               + "have been decided in another tab.",
+                               [["Back to the inbox", () => { window.location.href = "/agents"; }]],
+                               "conflict");
+                    return;
+                }
                 const body = new FormData(form);
                 body.set("redirect", "false");
                 const response = await fetch(form.action, { method: "POST", body });
@@ -661,7 +712,9 @@
 <div id="document">
 
     <p id="pagetitle">
-        {% if document_mode == "edit" %}
+        {% if staged %}
+        Review: {{title}}
+        {% elif document_mode == "edit" %}
         Edit: <a href="/wiki/{{ vault|default('main', true) }}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">{{title}} </a>
         {% elif document_mode == "create" %}
         Create: {{title}}
@@ -673,17 +726,18 @@
 
     <form action="/save/" method="post" name="edit_document_form">
         <textarea id="editor-initial-content" style="display:none">{{document}}</textarea>
+        {% if staged %}<textarea id="editor-baseline-content" style="display:none">{{baseline_document}}</textarea>{% endif %}
         <div id="edit_banner" role="status" hidden></div>
-        <div id="editor-container" data-vault="{{vault}}" data-source="{{move_source_rel}}" data-revision="{{revision or ''}}" style="resize:both; overflow:hidden; height:50vh; min-height:80px; border:1px solid var(--darker);"></div>
+        <div id="editor-container" data-vault="{{vault}}" data-source="{{move_source_rel}}" data-revision="{{revision or ''}}"{% if staged %} data-staged-row="{{staged.row_id}}" data-staged-run="{{staged.run_id}}" data-staged-agent="{{staged.agent}}" data-staged-note="{{staged.note}}"{% endif %} style="resize:both; overflow:hidden; height:50vh; min-height:80px; border:1px solid var(--darker);"></div>
         <input type="hidden" name="markdown" id="editor-hidden-input" value="">
         <input type="hidden" name="base_hash" value="{{base_hash}}">
         <br />
-        <input type="submit" value="Save" />
+        <input type="submit" value="{% if staged %}Accept{% else %}Save{% endif %}" />
         <input type="hidden" name="document_name" value="{{file_path}}">
         <button type="button" name="preview_button" onclick="editPreview(this)" value="true">Preview</button>
         <button type="button" name="diff_button" id="diff_button" aria-pressed="false"
                 title="Show what changed since you opened this page (Ctrl+Shift+D)">Show changes</button>
-        {% if document_mode == "edit" %}
+        {% if document_mode == "edit" and not staged %}
         <button name="delete_button" value="true">Delete</button>
         <button type="button" name="move_button" onclick="moveDocument(this)"
                 data-vault="{{vault}}" data-rel="{{move_source_rel}}">Move / Rename</button>

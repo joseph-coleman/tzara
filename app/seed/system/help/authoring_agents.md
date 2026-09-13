@@ -189,7 +189,7 @@ on: document created in Inbox/, document modified in Projects/ settled 30m
 
 The agent's **autonomy ceiling** - what happens to the writes its tools make.
 
-- `propose` (default) - every write is **staged** as a shadow copy for you to review and approve in the [/agents](/agents) inbox. Your pages are not touched until you approve the changes, which you can review.
+- `propose` (default) - every write is **staged** as a shadow copy for you to review and approve in the [/agents](/agents) inbox. Your pages are not touched until you approve the changes, which you can review. To take only part of a proposed change, or tweak it first, use **Accept with edits**: it opens the proposal in the editor as a diff against the page as it is now, where you can drop any change or edit freely, then Accept. It also rescues a proposal marked *drifted* because the page changed after it was made.
 - `act-with-checkpoint` (accepts the alias `act`) - writes are **applied immediately**, each preceded by a checkpoint commit so any change is recoverable. Grant this only to agents you trust. 
 
 There is no un-checkpointed "act" mode; `act` and `act-with-checkpoint` mean the same thing.
@@ -399,7 +399,7 @@ These are the internal tool names you may list in `capabilities:`. All are vault
 | `list_orphans` | Pages with no wikilinks in or out. | `path_prefix`, `limit` (1–200, def 50) |
 | `find_near_duplicates` | Highly similar but **unlinked** page pairs (merge candidates). | `threshold` (0.5–1.0, def 0.88), `path_prefix`, `limit` (def 30) |
 | `find_missing_links` | Related-but-unlinked page pairs (new-link candidates). | `low` (def 0.62), `high` (def 0.88), `path_prefix`, `limit` (def 40) |
-| `list_stale_stubs` | Short, long-untouched pages (likely abandoned). | `stale_days` (def 180), `max_chars` (def 400), `path_prefix`, `limit` (def 40) |
+| `list_stale_stubs` | Short pages whose file hasn't been modified in `stale_days` (likely abandoned), judged by the file's date on this machine. | `stale_days` (def 180), `max_chars` (def 400), `path_prefix`, `limit` (def 40) |
 
 ### Retrieval & reading
 

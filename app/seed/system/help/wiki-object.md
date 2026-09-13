@@ -41,13 +41,13 @@ Every method returns plain lists/dicts, so you can drop the result straight into
 | `wiki.tagged(tag)` | docs carrying a tag: `doc_id, title, summary` |
 | `wiki.backlinks(path)` | docs that link to `path` |
 | `wiki.frontmatter(path)` | one doc's `title, summary, tags, outbound_links, backlinks` |
-| `wiki.queryDocuments()` | every document row in the vault |
+| `wiki.queryDocuments()` | every document row in the vault: `doc_id, title, doc_exists, rag_indexed, summary, indexed_at` - `indexed_at` is when this install last indexed the page, not when it was edited |
 | `wiki.queryEdges()` | every link edge in the vault |
 | `wiki.queryDocumentTags()` | every document/tag pairing |
 | `wiki.list_orphans(path_prefix="", limit=50)` | real pages with no resolved wikilink in or out |
 | `wiki.find_near_duplicates(path_prefix="", threshold=0.88, limit=30)` | unlinked doc pairs that say nearly the same thing |
 | `wiki.find_missing_links(path_prefix="", low=0.62, high=0.88, limit=40)` | related-but-unlinked pairs - link candidates |
-| `wiki.list_stale_stubs(path_prefix="", max_chars=400, stale_days=180, limit=40)` | short pages not updated in a while |
+| `wiki.list_stale_stubs(path_prefix="", max_chars=400, stale_days=180, limit=40)` | short pages whose file hasn't been modified in `stale_days`, judged by the file's date on this machine (`file_modified`) |
 
 `path` accepts a vault-relative page path with or without a leading `/` or the `.md` suffix (e.g. `Programming/Code/Pytorch`).
 

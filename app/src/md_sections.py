@@ -418,6 +418,21 @@ def section_start(document: str, section: dict) -> int:
     return section['content_start'] - (len(section['heading']) + 1)
 
 
+def section_at(document: str, offset: int) -> dict | None:
+    """The innermost section containing `offset`, its heading line included - a
+    caret on `## Overview` is in the Overview section, and one inside a `###`
+    under it is in that subsection. Text above the first heading is the `(top)`
+    section. None when `offset` falls in the frontmatter."""
+    best = None
+    n = len(document)
+    for s in parse_sections(document):
+        start, end = section_start(document, s), s['content_end']
+        if start <= offset < end or (offset == end == n and start <= offset):
+            if best is None or s['level'] > best['level']:
+                best = s
+    return best
+
+
 def section_body(document: str, section: dict) -> str:
     """The section's content, excluding its heading line."""
     return document[section['content_start']:section['content_end']]

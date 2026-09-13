@@ -777,6 +777,19 @@ async def view_raw_document(request: Request):
 
 
 # /edit/
+def _staged_review_row(staged_id: str, vault: str, rel: str | None) -> dict | None:
+    """The staged write a `?staged=` review names, if it belongs to this page."""
+    from src import write_gate
+    try:
+        row = write_gate.get_staged_write(int(staged_id))
+    except (TypeError, ValueError):
+        return None
+    if row is None or not rel or row["vault_id"] != vault \
+            or row["rel_path"].casefold() != rel.casefold():
+        return None
+    return row
+
+
 async def edit_document(request: Request):
 
     doc_template = jinja_env.get_template("edit.html")
@@ -784,6 +797,8 @@ async def edit_document(request: Request):
     target_sha = None
     if request.query_params:
         target_sha = request.query_params.get("revision", None)
+        if request.query_params.get("staged"):
+            target_sha = None   # a review compares against the page as it is now
 
     doc_data = {}
 
@@ -844,6 +859,26 @@ async def edit_document(request: Request):
         # typed definition and starts as that definition's skeleton (src.doc_templates).
         raw_markdown = starter_document(wikidoc, vault)
         doc_data["document_mode"] = "create"
+
+    # "Accept with edits" from the /agents inbox: review an agent's staged proposal.
+    # The buffer is the proposal and the diff baseline is the page as it is on disk
+    # now, so what shows as changed is exactly the agent's change.
+    doc_data["staged"] = None
+    staged_id = request.query_params.get("staged")
+    if staged_id:
+        staged = await asyncio.to_thread(_staged_review_row, staged_id, vault,
+                                         wikidoc.relative_file_path())
+        if staged is None:
+            return RedirectResponse("/agents", status_code=303)
+        doc_data["baseline_document"] = escape(
+            raw_markdown if doc_data["document_mode"] == "edit" else "")
+        raw_markdown = staged["staged_content"]
+        doc_data["staged"] = {
+            "row_id": staged["id"],
+            "run_id": escape(staged["run_id"]),
+            "agent": escape(staged["agent_slug"]),
+            "note": escape(staged["note"] or ""),
+        }
 
     params = {"revision": target_sha}
     params = {k: v for k, v in params.items() if v is not None}
@@ -3037,6 +3072,14 @@ async def agents_inbox(request: Request):
                                  f'unchanged. {effect}</div>')
             apply_btn = ("" if f["drifted"] else
                          f'<button class="btn-sm" onclick="stagingAction(\'apply\', \'{run_id}\', [{fid}])">Apply</button>')
+            if op == "write" and f["rel_path"].endswith(".md"):
+                # Review in the editor. Offered for drifted rows too: reconciling
+                # against the page as it is now is how a drifted proposal is saved.
+                from urllib.parse import quote
+                review_url = (quote(f'/edit/{f["vault_id"]}/{f["rel_path"][:-3]}', safe="/")
+                              + f"?staged={fid}")
+                apply_btn += (f'<button class="btn-sm btn-ghost" '
+                              f'onclick="location.href=\'{review_url}\'">Accept with edits</button>')
             parts.append(
                 f'<details class="staging-file"><summary>{op_badge}'
                 f'<a href="/wiki/{escape(f["vault_id"])}/{escape(f["rel_path"].rsplit(".", 1)[0])}">{path_label}</a>{dest_label}{drift}</summary>'
@@ -3349,6 +3392,8 @@ async def editors_page(request: Request):
                 tools.append("`" + ", ".join(t["name"] + "()" for t in d.custom_tools) + "`")
             tools_cell = " &bull; ".join(tools) if tools else "–"
             op_cell = f"note → `{d.output}`" if d.operation == "note" else d.operation
+            if d.choices > 1:
+                op_cell += f" ({d.choices} choices)"
             vaults_cell = "all" if d.vaults == ["*"] else _md_esc(", ".join(d.vaults))
             # Persistence reads as flags under the validity badge - absent means off,
             # so the common case (a tool that keeps nothing) stays a single word.
@@ -3447,7 +3492,7 @@ async def agents_staging_endpoint(request: Request):
     action = data.get("action", "")
     run_id = (data.get("run_id") or "").strip()
     ids = data.get("ids")
-    if not run_id or action not in ("apply", "reject", "discard"):
+    if not run_id or action not in ("apply", "apply_edited", "reject", "discard"):
         return JSONResponse({"error": "bad request"}, status_code=400)
     if ids is not None:
         ids = [int(i) for i in ids]
@@ -3461,7 +3506,20 @@ async def agents_staging_endpoint(request: Request):
         logging.exception("staging: get_run_meta failed for %s", run_id)
         meta = None
 
-    if action == "apply":
+    if action == "apply_edited":
+        # "Accept with edits": one staged write, as reviewed in the editor.
+        content = data.get("content")
+        if not ids or len(ids) != 1 or not isinstance(content, str):
+            return JSONResponse({"error": "apply_edited takes one id and the content"},
+                                status_code=400)
+        out = await asyncio.to_thread(write_gate.promote_reviewed, ids[0], run_id,
+                                      content, str(data.get("expected_hash") or ""))
+        if out["status"] == "drift":
+            return JSONResponse(out, status_code=409)
+        if out["status"] != "applied":
+            return JSONResponse({"error": out["status"]}, status_code=409)
+        result = {"applied": 1, "drift": 0, "other": 0, "edited": out["edited"]}
+    elif action == "apply":
         result = await asyncio.to_thread(write_gate.apply_batch, run_id, ids)
     elif action == "reject":
         result = await asyncio.to_thread(write_gate.reject_batch, run_id, ids)
@@ -3473,7 +3531,8 @@ async def agents_staging_endpoint(request: Request):
     # click, so a depth-0 event is correct even for an agent-caused batch.
     if meta is not None:
         from src.events import emit
-        etype = "staging.approved" if action == "apply" else "staging.rejected"
+        etype = ("staging.approved" if action in ("apply", "apply_edited")
+                 else "staging.rejected")
         payload = dict(result)
         if action == "discard":
             payload["discarded"] = True
@@ -4088,6 +4147,23 @@ async def edit_commands_endpoint(request: Request):
             except Exception:
                 vault = None
     return JSONResponse(edit_assist.list_commands(vault))
+
+
+async def edit_section_range_endpoint(request: Request):
+    """POST /api/edit/section-range {content, cursor} - the range a `scope: section`
+    editor tool works on: the text of the section at the caret, heading kept.
+    Found server-side with md_sections (the parser the agents' section tools use)
+    so the browser keeps no heading parser of its own."""
+    from src import edit_assist
+    data = await request.json()
+    content, cursor = data.get("content"), data.get("cursor")
+    if not isinstance(content, str) or not isinstance(cursor, int):
+        return JSONResponse({"error": "content (string) and cursor (int) are required"},
+                            status_code=400)
+    section = edit_assist.section_range(content, cursor)
+    if section is None:
+        return JSONResponse({"error": "no section at the caret"}, status_code=404)
+    return JSONResponse(section)
 
 
 async def related_documents_endpoint(request: Request):
@@ -4836,6 +4912,7 @@ routes = [
     Route("/api/chat/", endpoint=chat_endpoint, methods=["POST"]),
     Route("/api/edit/assist", endpoint=edit_assist_endpoint, methods=["POST"]),
     Route("/api/edit/commands", endpoint=edit_commands_endpoint, methods=["GET"]),
+    Route("/api/edit/section-range", endpoint=edit_section_range_endpoint, methods=["POST"]),
     # Route(
     #     "/api/ponder/", endpoint=ponder_document, methods=["POST", "GET"]
     # ),  # chat or ponder? 

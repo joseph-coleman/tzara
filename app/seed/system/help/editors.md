@@ -30,14 +30,14 @@ If an [agent](agents.md) is an LLM that talks to itself in the background to ten
 
 # What they can do
 
-Every editor tool has a **prompt** (what to do with the text), a **scope** (what text it looks at - the selection, the whole document, or the area around your caret), and an **operation** (what to do with the result):
+Every editor tool has a **prompt** (what to do with the text), a **scope** (what text it looks at - the selection, the section your caret is in, the whole document, or the area around your caret), and an **operation** (what to do with the result):
 
 - **replace** what the tool looked at - "rewrite this in plain English", "fix the grammar", "turn this into a table". With nothing selected, this replaces the paragraph your caret is sitting in.
 - **prepend** or **append** - put the result before or after it. "Write a lede for this section", "add a TL;DR at the top", "extract the key points and list them at the end".
 - **insert** at the caret exactly - "continue this sentence", "write the paragraph that bridges these two". A caret-scoped tool sees the document on both sides of the caret, so it can write something that fits *between* what comes before and what comes after, not just something that follows on.
 - **note** - leave the document untouched and instead append the result to a growing external digest - "add this passage to my reading journal", "collect these characters into a glossary".
 
-Tools can also be given a couple of **read-only search tools**, or **custom Python functions you write**, and can keep **memory** across invocations so a note-taking tool assimilates what it has seen over many runs and many documents.
+Tools can also be given **read-only tools** that search the wiki or read other pages, or **custom Python functions you write**, and can keep **memory** across invocations so a note-taking tool assimilates what it has seen over many runs and many documents. A tool can offer **several alternatives** - three candidate titles, say - and you switch between them in the preview before accepting one.
 
 # The building blocks
 

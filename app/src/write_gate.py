@@ -91,7 +91,7 @@ def reset_run_context(token) -> None:
     _run_ctx.reset(token)
 
 
-def current_run() -> tuple[str, str, str] | None:
+def current_run() -> tuple[str, str, str, int] | None:
     return _run_ctx.get()
 
 
@@ -634,7 +634,8 @@ def _set_status(row_id: int, status: str) -> None:
 
 
 def _apply_to_disk(vault_id: str, rel: str, new_content: str,
-                   agent_slug: str, run_id: str, current: str | None) -> None:
+                   agent_slug: str, run_id: str, current: str | None,
+                   edited: bool = False) -> None:
     """Checkpoint-before-mutate write: pre-image commit -> EOL-preserving write
     -> attributed commit -> watcher debounce. Shared by human promotion
     (promote_file) and act-with-checkpoint runs (gated_write).
@@ -646,7 +647,8 @@ def _apply_to_disk(vault_id: str, rel: str, new_content: str,
     from src.wikidoc import WikiDoc
     _mark_agent_writer(vault_id, rel, agent_slug, run_id)
     WikiDoc.commit(vault_id, rel, new_content,
-                   message=f"agent({agent_slug}/{vault_id}/{run_id}): {rel}",
+                   message=(f"agent({agent_slug}/{vault_id}/{run_id}): {rel}"
+                            + (" (edited on apply)" if edited else "")),
                    checkpoint=current is not None)
 
 
@@ -694,6 +696,58 @@ def promote_file(row_id: int) -> str:
     _maybe_cleanup_run(row["run_id"])
     logger.info("applied staged %s %s:%s (run %s)", op, vault_id, rel, row["run_id"])
     return "applied"
+
+
+def get_staged_write(row_id: int) -> dict | None:
+    """One undecided staged WRITE plus its proposed text ("staged_content"), or
+    None - what the editor loads to review it ("Accept with edits")."""
+    row = _get_row(row_id)
+    if row is None or row["status"] not in ("pending", "drift") \
+            or (row.get("op") or "write") != "write":
+        return None
+    shadow = _shadow_path(row["run_id"], row["vault_id"], row["rel_path"])
+    if not os.path.isfile(shadow):
+        return None
+    from src.wikidoc import WikiDoc
+    row["staged_content"] = WikiDoc._read_raw(shadow)
+    return row
+
+
+def promote_reviewed(row_id: int, run_id: str, content: str,
+                     expected_hash: str) -> dict:
+    """Apply a staged WRITE as reviewed in the editor ("Accept with edits").
+
+    `content` is what the reviewer accepted: the proposal, possibly with some of
+    its changes dropped or edited. The drift check compares the page against
+    `expected_hash` - the page as the reviewer saw it when the review opened -
+    not the row's base_hash, because the reviewer reconciled the proposal
+    against that text; so a proposal the page has since outgrown ('drift') can
+    still be accepted. A change DURING the review is refused, with the current
+    text for the editor to rebase onto.
+
+    Returns {"status": "applied", "edited": bool}, {"status": "drift",
+    "current", "base_hash"}, or {"status": "not_reviewable"}. The agent stays
+    the recorded author; an edit only marks the commit message.
+    """
+    row = get_staged_write(row_id)
+    if row is None or row["run_id"] != run_id:
+        return {"status": "not_reviewable"}
+    vault_id, rel = row["vault_id"], row["rel_path"]
+    current = _read_disk(vault_id, rel)
+    current_hash = _content_hash(current) if current is not None else ""
+    if current_hash != expected_hash:
+        return {"status": "drift", "current": current or "", "base_hash": current_hash}
+    content = content.replace("\r\n", "\n")
+    edited = content != row["staged_content"].replace("\r\n", "\n")
+    _apply_to_disk(vault_id, rel, content, row["agent_slug"], run_id, current,
+                   edited=edited)
+    _set_status(row_id, "applied")
+    shadow = _shadow_path(run_id, vault_id, rel)
+    if os.path.isfile(shadow):
+        os.remove(shadow)
+    _maybe_cleanup_run(run_id)
+    logger.info("applied reviewed %s:%s (run %s, edited=%s)", vault_id, rel, run_id, edited)
+    return {"status": "applied", "edited": edited}
 
 
 # Writes first: a staged edit to a page that links to a moving one was computed

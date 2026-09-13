@@ -168,8 +168,20 @@ def list_stale_stubs(vault_id: str, conn=None,
                      stale_days: int = 180,
                      limit: int = 40,
                      path_prefix: str = "") -> list[dict]:
-    """Indexed pages whose total chunk text is short AND not updated recently -
-    likely abandoned stubs worth fleshing out or removing."""
+    """Indexed pages whose total chunk text is short AND whose file has not been
+    modified recently - likely abandoned stubs worth fleshing out or removing.
+
+    Staleness is the file's mtime on THIS machine (``file_modified`` in each row),
+    not documents.updated_at, which the indexer resets on every (re)index. A sync
+    or `git pull` usually stamps a copied file with the time of the copy, so the
+    common error makes a page look fresher, not older - a stub is missed rather
+    than a recently edited page reported as abandoned."""
+    import os
+    import time
+
+    from src import timefmt
+    from src.wikidoc import WikiDoc
+
     own = conn is None
     if own:
         conn = _get_pg_connection()
@@ -177,7 +189,7 @@ def list_stale_stubs(vault_id: str, conn=None,
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             """
-            SELECT d.doc_id, d.title, d.updated_at,
+            SELECT d.doc_id, d.title,
                    COALESCE(SUM(LENGTH(c.content)), 0) AS content_len
             FROM documents d
             LEFT JOIN chunks c ON c.vault_id = d.vault_id AND c.doc_id = d.doc_id
@@ -185,25 +197,29 @@ def list_stale_stubs(vault_id: str, conn=None,
               AND d.rag_indexed = TRUE
               AND d.doc_id NOT LIKE %s
               AND d.doc_id LIKE %s ESCAPE '\\'
-            GROUP BY d.doc_id, d.title, d.updated_at
+            GROUP BY d.doc_id, d.title
             HAVING COALESCE(SUM(LENGTH(c.content)), 0) < %s
-               AND d.updated_at < NOW() - make_interval(days => %s)
-            ORDER BY d.updated_at ASC
-            LIMIT %s
             """,
-            (vault_id, _AGENT_OWNED_PREFIX, _like_prefix(path_prefix),
-             max_chars, stale_days, limit),
+            (vault_id, _AGENT_OWNED_PREFIX, _like_prefix(path_prefix), max_chars),
         )
-        rows = []
-        for r in cur.fetchall():
-            d = dict(r)
-            if d.get("updated_at") is not None:
-                d["updated_at"] = d["updated_at"].isoformat()
-            rows.append(d)
-        return rows
+        short = cur.fetchall()
     finally:
         if own:
             conn.close()
+
+    cutoff = time.time() - stale_days * 86400
+    stale = []
+    for r in short:
+        try:
+            mtime = os.path.getmtime(WikiDoc._abs_checked(vault_id, r["doc_id"]))
+        except (OSError, ValueError):
+            continue  # file gone since indexing, or a path the resolver refuses
+        if mtime < cutoff:
+            d = dict(r)
+            d["file_modified"] = timefmt.to_local(int(mtime)).isoformat(timespec="seconds")
+            stale.append((mtime, d))
+    stale.sort(key=lambda pair: pair[0])
+    return [d for _, d in stale[:limit]]
 
 
 # ---------------------------------------------------------------------------

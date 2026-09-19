@@ -20,9 +20,10 @@ watchers and feedback loops from self-generated file writes.
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import FileModifiedEvent, FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 from src.task_tracker import PENDING_KEY, preseed_pending
 
@@ -62,6 +63,20 @@ CANCELLED_TTL = 120
 _announce_tasks: set = set()
 
 
+def exists_exact(abs_path: str | bytes) -> bool:
+    """True if abs_path is a file under exactly this name.
+
+    The vault mount is case-insensitive, so os.path.exists("Foo.md") is True
+    after Foo.md was deleted and foo.md created. A delete/create pair that is
+    really a case-only rename must not read as the file still being there."""
+    try:
+        with os.scandir(os.path.dirname(abs_path)) as it:
+            name = os.path.basename(abs_path)
+            return any(e.name == name and e.is_file() for e in it)
+    except OSError:
+        return False
+
+
 def watcher_task_id(task_name: str, vault: str, rel_path: str) -> str:
     """THE watcher task id. Build it here, never by hand.
 
@@ -99,6 +114,9 @@ class WikiFileEventHandler(FileSystemEventHandler):
         self._loop = loop
         self._wiki_root = os.path.abspath(wiki_root)
         self._redis_url = redis_url
+        # abs path -> monotonic time of an in-place replace seen by on_deleted;
+        # the paired on_created from the same poll is dropped.
+        self._replaced: dict[str | bytes, float] = {}
 
     def _should_ignore(self, path):
         parts = Path(path).parts
@@ -203,6 +221,9 @@ class WikiFileEventHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory:
             return
+        seen = self._replaced.pop(event.src_path, None)
+        if seen is not None and time.monotonic() - seen < POLL_INTERVAL:
+            return                      # second half of an in-place replace
         if self._should_ignore(event.src_path):
             return
         vault, rel = self._split_vault(event.src_path)
@@ -239,6 +260,16 @@ class WikiFileEventHandler(FileSystemEventHandler):
             return
         vault, rel = self._split_vault(event.src_path)
         if vault is None:
+            return
+        if exists_exact(event.src_path):
+            # Same path, new inode: an outside writer saved by temp + rename
+            # (Dropbox re-placing a synced copy, editors' safe-save). watchdog's
+            # snapshot diff reports that as deleted + created; it is a
+            # modification. The poll queues deletes before creates, so the
+            # paired on_created arrives next and is dropped.
+            logger.info("file replaced in place: %s/%s", vault, rel)
+            self._replaced[event.src_path] = time.monotonic()
+            self.on_modified(FileModifiedEvent(event.src_path))
             return
         logger.info("file deleted: %s/%s", vault, rel)
         from src.task_definitions import remove_document_task

@@ -29,7 +29,7 @@ Pages are viewed in your web browser, styled however you like.  You can click on
 | Shortcut  | Action |
 |:---------:|--------|
 | Ctrl-E | Edit a page. |
-| Ctrl-P | Opens the command palette.  You can type a page name to navigate to it, or new page name to create it.  You can also type `>` for navigation commands, or `@` to switch vaults. |
+| Ctrl-P | Opens the command palette.  You can type a page name to navigate to it, or new page name to create it.  You can also type `>` for commands: the page's links and buttons, such as Save and Preview on the edit page, each listed with its keyboard shortcut. Type `@` to switch vaults. |
 
 
 ## Editing

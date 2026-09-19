@@ -29,7 +29,7 @@
         {% if document_mode == "edit" %}
         <li><a data-command="View page" href="/wiki/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">View</a></li>
         {% elif document_mode == "view" and not hide_edit_link %}
-        <li><a id="nav_edit" data-command="Edit page" href="/edit/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">Edit</a></li>
+        <li><a id="nav_edit" data-command="Edit page" data-command-key="Mod-e" href="/edit/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}{% if doc_query_string %}?{{ doc_query_string }}{% endif %}">Edit</a></li>
         {% endif %}
         {% if has_history %}
         <li><a data-command="Page history" href="/history/{{v}}/{% if page_path %}{{page_path}}/{% endif %}{{page_name}}">History</a></li>

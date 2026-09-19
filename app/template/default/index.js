@@ -65,7 +65,9 @@
       e.stopPropagation();
       // Drag the whole selection if this row is part of it, else just this row.
       dragPaths = cb.checked ? selectedPaths() : [li.dataset.path];
-      e.dataTransfer.effectAllowed = 'move';
+      // copyMove, not move: whether this drag copies is decided at the DROP
+      // (Ctrl held), which dragstart cannot know yet.
+      e.dataTransfer.effectAllowed = 'copyMove';
       e.dataTransfer.setData('text/plain', dragPaths.join('\n'));
       li.classList.add('idx-dragging');
       // Signal page-wide "drag mode" so drop targets (root box + folder rows)
@@ -80,11 +82,13 @@
     if (li.dataset.type === 'dir') registerDropTarget(li, () => li.dataset.path);
   });
 
+  // Ctrl-drag copies, plain drag moves (the file-explorer convention). dropEffect
+  // is set per dragover so the cursor tracks the key while the drag is in flight.
   function registerDropTarget(el, destFn) {
     el.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = 'move';
+      e.dataTransfer.dropEffect = e.ctrlKey ? 'copy' : 'move';
       el.classList.add('idx-drop-hover');
     });
     el.addEventListener('dragleave', () => el.classList.remove('idx-drop-hover'));
@@ -92,7 +96,8 @@
       e.preventDefault();
       e.stopPropagation();
       el.classList.remove('idx-drop-hover');
-      doMove(dragPaths, destFn());
+      if (e.ctrlKey) doCopy(dragPaths, destFn(), '');
+      else doMove(dragPaths, destFn());
     });
   }
 
@@ -100,19 +105,30 @@
 
   const toolbar = document.createElement('div');
   toolbar.id = 'idx-toolbar';
+  // Two rows. Top: everything scoped to the SELECTION (plus the root drop target,
+  // which is a move destination). Bottom: view controls that act on the whole tree
+  // and never touch files. Splitting them keeps the file-op row readable now that
+  // it carries both Move and Copy.
   toolbar.innerHTML =
+    '<div class="idx-bar idx-bar-ops">' +
     '<span id="idx-count">0 selected</span>' +
     '<button type="button" id="idx-move-btn">Move to…</button>' +
+    '<button type="button" id="idx-copy-btn" ' +
+    'title="Copy the selection (Ctrl-drag does this too)">Copy to…</button>' +
     '<button type="button" id="idx-delete-btn">Delete</button>' +
     '<button type="button" id="idx-clear-btn">Clear</button>' +
+    '<span class="idx-spacer"></span>' +
+    '<span class="idx-root-drop" title="Drop here to move to the wiki root">📂 / (root)</span>' +
+    '</div>' +
+    '<div class="idx-bar idx-bar-view">' +
     '<button type="button" id="idx-collapse-all" title="Collapse every folder">Collapse all</button>' +
     '<button type="button" id="idx-expand-all" title="Expand every folder">Expand all</button>' +
-    '<span class="idx-spacer"></span>' +
-    '<span class="idx-root-drop" title="Drop here to move to the wiki root">📂 / (root)</span>';
+    '</div>';
   container.parentNode.insertBefore(toolbar, container);
 
   const countEl = toolbar.querySelector('#idx-count');
-  toolbar.querySelector('#idx-move-btn').addEventListener('click', openPicker);
+  toolbar.querySelector('#idx-move-btn').addEventListener('click', () => openPicker('move'));
+  toolbar.querySelector('#idx-copy-btn').addEventListener('click', () => openPicker('copy'));
   toolbar.querySelector('#idx-delete-btn').addEventListener('click', () =>
     doDelete(selectedPaths())
   );
@@ -203,8 +219,11 @@
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }
 
-  function openPicker() {
-    if (!selectedRows().length) {
+  // One picker for both destinations-taking ops; `mode` is 'move' or 'copy'.
+  function openPicker(mode) {
+    const isCopy = mode === 'copy';
+    const sel = selectedRows();
+    if (!sel.length) {
       toast('Select at least one item first.');
       return;
     }
@@ -219,10 +238,20 @@
           }</li>`
       )
       .join('');
+    // Copying one item is the rename case: lifting a single page out of a folder
+    // that will be rewritten usually wants a new name in the same gesture.
+    const nameField =
+      isCopy && sel.length === 1
+        ? '<label class="idx-pick-label">Name<input type="text" class="idx-pick-name" ' +
+          'value="' + escapeAttr(baseName(sel[0].dataset.path)) + '" autocomplete="off">' +
+          '</label>'
+        : '';
     overlay.innerHTML =
-      '<div class="idx-modal"><div class="idx-modal-head">Move ' +
-      selectedRows().length +
+      '<div class="idx-modal"><div class="idx-modal-head">' +
+      (isCopy ? 'Copy ' : 'Move ') +
+      sel.length +
       ' item(s) to…</div>' +
+      nameField +
       '<input type="text" class="idx-pick-filter" ' +
       'placeholder="Filter or type a new folder name…" autocomplete="off">' +
       '<ul class="idx-pick-list">' +
@@ -237,12 +266,16 @@
     });
     overlay.querySelector('.idx-modal-cancel').addEventListener('click', close);
 
-    // Existing-folder rows: move the selection into that folder.
+    const nameInput = overlay.querySelector('.idx-pick-name');
+    const run = (dest) => {
+      close();
+      if (isCopy) doCopy(selectedPaths(), dest, nameInput ? nameInput.value : '');
+      else doMove(selectedPaths(), dest);
+    };
+
+    // Existing-folder rows: send the selection into that folder.
     overlay.querySelectorAll('.idx-pick:not(.idx-pick-create)').forEach((li) =>
-      li.addEventListener('click', () => {
-        close();
-        doMove(selectedPaths(), li.dataset.dest);
-      })
+      li.addEventListener('click', () => run(li.dataset.dest))
     );
 
     // Filter box doubles as a "new folder" name. Typing filters the existing
@@ -252,12 +285,8 @@
     const createRow = overlay.querySelector('.idx-pick-create');
     const existing = new Set(allDests);
 
-    const createInto = (dest) => {
-      close();
-      doMove(selectedPaths(), dest);
-    };
     createRow.addEventListener('click', () => {
-      if (createRow.dataset.dest) createInto(createRow.dataset.dest);
+      if (createRow.dataset.dest) run(createRow.dataset.dest);
     });
 
     input.addEventListener('input', () => {
@@ -278,10 +307,23 @@
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && createRow.dataset.dest) {
         e.preventDefault();
-        createInto(createRow.dataset.dest);
+        run(createRow.dataset.dest);
       }
     });
-    input.focus();
+    if (nameInput) {
+      // Name first, then the folder: Enter hands off rather than submitting, since
+      // a destination still has to be chosen.
+      nameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          input.focus();
+        }
+      });
+      nameInput.focus();
+      nameInput.select();
+    } else {
+      input.focus();
+    }
   }
 
   // ---- move execution ------------------------------------------------------
@@ -323,6 +365,64 @@
       }
     } catch (err) {
       toast('Move error: ' + err.message);
+    }
+  }
+
+  // ---- copy execution ------------------------------------------------------
+
+  async function doCopy(items, destination, name) {
+    items = (items || []).filter(Boolean);
+    if (!items.length) return;
+
+    // A folder can't be copied into itself or a descendant (it would recurse).
+    // Copying into its OWN parent is fine -- that is the duplicate case, which
+    // the server names "<thing> copy".
+    const bad = items.find(
+      (p) => destination === p || destination.startsWith(p + '/')
+    );
+    if (bad) {
+      toast(`Can't copy “${bad}” into itself.`);
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/batch-copy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items,
+          destination,
+          name: (name || '').trim(),
+          vault: window.WIKI_VAULT,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || (data.status !== 'ok' && data.status !== 'noop')) {
+        toast('Copy failed: ' + (data.reason || res.status));
+        return;
+      }
+      const copied = data.copied || [];
+      const skipped = data.skipped || [];
+      if (skipped.length) {
+        toast(
+          `Copied ${copied.length}; skipped ${skipped.length} (${skipped[0].reason}…)`
+        );
+        setTimeout(() => location.reload(), 1800);
+      } else if (copied.length) {
+        // Name where it landed: an unnamed copy may have been suffixed, so the
+        // destination is news even when everything succeeded.
+        flash(
+          'Copied to “' +
+            copied[0].dest +
+            '”' +
+            (copied.length > 1 ? ' +' + (copied.length - 1) + ' more' : '')
+        );
+        location.reload();
+      } else {
+        toast('Nothing copied.');
+      }
+    } catch (err) {
+      toast('Copy error: ' + err.message);
     }
   }
 
@@ -382,6 +482,20 @@
     toastTimer = setTimeout(() => t.classList.remove('idx-toast-show'), 3000);
   }
 
+  // A toast about work that ends in a reload has to outlive the navigation to be
+  // read at all; sessionStorage carries it across and init() shows it once.
+  function flash(msg) {
+    try {
+      sessionStorage.setItem('tzara-idx-flash', msg);
+    } catch (e) {
+      /* storage blocked: the op still happened, only the notice is lost */
+    }
+  }
+
+  function baseName(p) {
+    return (p || '').split('/').pop();
+  }
+
   function escapeHtml(s) {
     return s.replace(/[&<>"]/g, (c) =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])
@@ -392,6 +506,16 @@
   }
 
   updateToolbar();
+
+  try {
+    const pending = sessionStorage.getItem('tzara-idx-flash');
+    if (pending) {
+      sessionStorage.removeItem('tzara-idx-flash');
+      toast(pending);
+    }
+  } catch (e) {
+    /* storage blocked: nothing to show */
+  }
   }
 
   // base_header scripts run during <head> parsing, before #document_container

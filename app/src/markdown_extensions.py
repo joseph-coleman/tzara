@@ -18,6 +18,7 @@ from markdown.preprocessors import Preprocessor
 from markdown.treeprocessors import Treeprocessor
 
 from config import PREVIEW_EMBED_FILE_TYPES
+from src.fenced_block import replace_top_level_fences
 from src.md_sections import strip_comment_blocks
 
 
@@ -421,6 +422,45 @@ class FileEmbedExtension(Extension):
         )
 
 
+# href/src attribute whose value is a URL we may need to resolve against a
+# document's vault/path. Captures the quote style so it round-trips unchanged.
+# The lookbehind keeps `data-src=` / `data-canvas-src=` from matching.
+_URL_ATTR_RE = re.compile(
+    r"""(?P<attr>(?<![\w-])(?:href|src))\s*=\s*(?P<q>["'])(?P<url>[^"']*)(?P=q)""",
+    re.IGNORECASE,
+)
+
+# A URL that already carries its own resolution context and must be left alone:
+# fragment-only (#...), root-absolute (/...), protocol-relative (//...), or any
+# scheme (http:, https:, mailto:, data:, tel:, ...).
+_ABSOLUTE_URL_RE = re.compile(r"^(?:#|/|//|[a-zA-Z][a-zA-Z0-9+.\-]*:)")
+
+
+def absolutize_relative_urls(html_text: str, prefix: str) -> str:
+    """Prefix relative ``href``/``src`` URLs in an HTML fragment with ``prefix``.
+
+    Used wherever rendered markdown is displayed somewhere other than its own
+    ``/wiki/{vault}/{path}`` URL: a transcluded page inside its host, and the
+    ``/api/markdown/`` fragment (canvas embed, chat bubble, edit preview). The
+    browser would otherwise resolve ``chart.png`` against the HOST page's URL.
+
+    Per-URL rewriting instead of a ``<base href=...>`` tag: ``<base>`` is
+    document-wide, so an injected one hijacks every relative URL on the whole
+    host page, including its own ``[TOC]`` "#anchor" links. URLs that are
+    already absolute, protocol-relative, scheme-qualified, or fragment-only are
+    left as is (the browser still normalizes ``..`` segments in the result).
+    """
+
+    def _sub(match: "re.Match") -> str:
+        url = match.group("url")
+        if not url or _ABSOLUTE_URL_RE.match(url):
+            return match.group(0)
+        q = match.group("q")
+        return f'{match.group("attr")}={q}{prefix}{url}{q}'
+
+    return _URL_ATTR_RE.sub(_sub, html_text)
+
+
 def _no_render(text, *, current_path, depth, visited):
     """Sentinel default for the nested-render callback (see _no_resolver). When
     no renderer is wired the fragment can't be rendered, so escape it as text.
@@ -526,6 +566,14 @@ def render_transclusion(target, anchor, *, vault, current_path, resolve_callback
         for flag, on in child_flags.items():
             if on:
                 setattr(host_md, flag, True)
+
+    # Rebase the child's relative href/src (![](chart.png), [x](Other.md),
+    # ![[img.png]]) onto the child's own folder; inlined into the host they would
+    # otherwise resolve against the host page's URL. Grandchild URLs were already
+    # made absolute by their own render_transclusion, so they're skipped here.
+    child_dir = resolved.rsplit("/", 1)[0] if "/" in resolved else ""
+    base = f"/wiki/{vault}/" + (f"{quote(child_dir, safe='/')}/" if child_dir else "")
+    child_html = absolutize_relative_urls(child_html, base)
 
     # Title bar: child frontmatter `title`, else the filename stem; links to the
     # source page. quote() the href like the canvas/file embeds do.
@@ -843,6 +891,22 @@ class AutoLinkExtension(Extension):
         md.inlinePatterns.register(AutoLinkInlineProcessor(URL_RE, md), "autolink", 200)
 
 
+# Inline code span: a run of N backticks closed by exactly N, not crossing a
+# blank line (markdown's inline pass never pairs backticks across paragraphs).
+_CODE_SPAN = r"(?<!\\)(?P<fence>`+)(?:(?!\n[ \t]*\n).)+?(?<!`)(?P=fence)(?!`)"
+
+
+def _math_re(pattern, flags=0):
+    """
+    Compile a math pattern with an inline-code-span alternative ahead of it.
+
+    Math runs as a preprocessor, before markdown's inline pass has claimed code
+    spans, so `$` in `` `$` `` would otherwise open a formula. As one regex, the
+    leftmost of code span or formula wins, matching a real inline parser.
+    """
+    return re.compile(rf"(?P<code>{_CODE_SPAN})|{pattern}", flags | re.DOTALL)
+
+
 class UnifiedMathPreprocessor(Preprocessor):
     # """
     # Handles all math delimiters via regex replacements:
@@ -852,24 +916,34 @@ class UnifiedMathPreprocessor(Preprocessor):
     #   - $$ ... $$ (block)
     # """
 
-    # Patterns
-    RE_BLOCK_DOLLAR = re.compile(r"^\$\$\s*\n(.*?)\n\s*\$\$", re.MULTILINE | re.DOTALL)
-    RE_BLOCK_BRACKET = re.compile(
-        r"^\s*\\\[\s*\n(.*?)\n\s*\\\]\s*$", re.MULTILINE | re.DOTALL
+    # Patterns; each captures the formula as `tex`.
+    RE_BLOCK_DOLLAR = _math_re(r"^\$\$\s*\n(?P<tex>.*?)\n\s*\$\$", re.MULTILINE)
+    RE_BLOCK_BRACKET = _math_re(
+        r"^\s*\\\[\s*\n(?P<tex>.*?)\n\s*\\\]\s*$", re.MULTILINE
     )
     # RE_INLINE_DOLLAR = re.compile(
     #     r"(?<!\\)(?<!\$)\$(?!\$)(.+?)(?<!\\)(?<!\$)\$(?!\$)", re.DOTALL
     # )
 
-    RE_INLINE_DOLLAR = re.compile(
-        r"(?<!\\)(?<!\$)\$(?!\$)(?!\d)(.+?)(?<!\\)(?<!\$)\$(?!\$)", re.DOTALL
+    RE_INLINE_DOLLAR = _math_re(
+        r"(?<!\\)(?<!\$)\$(?!\$)(?!\d)(?P<tex>.+?)(?<!\\)(?<!\$)\$(?!\$)"
     )
 
-    RE_INLINE_DOUBLEDOLLAR = re.compile(
-        r"(?<!\\)(?<!\$)\$\$(?!\$)(.+?)(?<!\\)(?<!\$)\$\$(?!\$)", re.DOTALL
+    RE_INLINE_DOUBLEDOLLAR = _math_re(
+        r"(?<!\\)(?<!\$)\$\$(?!\$)(?P<tex>.+?)(?<!\\)(?<!\$)\$\$(?!\$)"
     )
-    RE_INLINE_PAREN = re.compile(r"(?<!\\)\\\((.+?)\\\)", re.DOTALL)
-    RE_INLINE_BRACKET = re.compile(r"(?<!\\)\\\[(.+?)\\\]", re.DOTALL)
+    RE_INLINE_PAREN = _math_re(r"(?<!\\)\\\((?P<tex>.+?)\\\)")
+    RE_INLINE_BRACKET = _math_re(r"(?<!\\)\\\[(?P<tex>.+?)\\\]")
+
+    def _sub(self, pattern, fmt, text):
+        """Stash each formula as `fmt` around its TeX; code spans pass through."""
+
+        def repl(m):
+            if m.group("code"):
+                return m.group(0)
+            return self.md.htmlStash.store(fmt.format(m.group("tex").strip()))
+
+        return pattern.sub(repl, text)
 
     def run(self, lines):
         text = "\n".join(lines)
@@ -877,34 +951,22 @@ class UnifiedMathPreprocessor(Preprocessor):
         original_text = text + ""
 
         # Block: $$ ... $$
-        text = self.RE_BLOCK_DOLLAR.sub(
-            lambda m: self.md.htmlStash.store(f"\\[\n{ m.group(1).strip()}\n\\]"), text
-        )
+        text = self._sub(self.RE_BLOCK_DOLLAR, "\\[\n{}\n\\]", text)
 
         # Block: \[ ... \] (on separate lines)
-        text = self.RE_BLOCK_BRACKET.sub(
-            lambda m: self.md.htmlStash.store(f"\\[\n{m.group(1).strip()}\n\\]"), text
-        )
+        text = self._sub(self.RE_BLOCK_BRACKET, "\\[\n{}\n\\]", text)
 
         # Inline Block: $$ ... $$
-        text = self.RE_INLINE_DOUBLEDOLLAR.sub(
-            lambda m: self.md.htmlStash.store(f"\\[{m.group(1).strip()}\\]"), text
-        )
+        text = self._sub(self.RE_INLINE_DOUBLEDOLLAR, "\\[{}\\]", text)
 
         # Inline: $...$
-        text = self.RE_INLINE_DOLLAR.sub(
-            lambda m: self.md.htmlStash.store(f"\\({m.group(1).strip()}\\)"), text
-        )
+        text = self._sub(self.RE_INLINE_DOLLAR, "\\({}\\)", text)
 
         # Inline: \( ... \)
-        text = self.RE_INLINE_PAREN.sub(
-            lambda m: self.md.htmlStash.store(f"\\(\n{m.group(1).strip()}\n\\)"), text
-        )
+        text = self._sub(self.RE_INLINE_PAREN, "\\(\n{}\n\\)", text)
 
         # Inline: \[ ... \]
-        text = self.RE_INLINE_BRACKET.sub(
-            lambda m: self.md.htmlStash.store(f"\\[\n{m.group(1).strip()}\n\\]"), text
-        )
+        text = self._sub(self.RE_INLINE_BRACKET, "\\[\n{}\n\\]", text)
 
         if text != original_text:
             self.md.tzara_has_latex = True
@@ -914,9 +976,43 @@ class UnifiedMathPreprocessor(Preprocessor):
         return text.split("\n")
 
 
+class MathFencePreprocessor(Preprocessor):
+    """
+    ```math fences (GitHub's display-math syntax) render as LaTeX, not code.
+
+    Must run before fenced_code (25), which would otherwise claim the fence as a
+    code block; UnifiedMathPreprocessor (9) runs too late to see it. The body is
+    stashed whole, so `$`, backslashes and `&` never reach the later math pass or
+    markdown's inline processing.
+    """
+
+    def run(self, lines):
+        text = "\n".join(lines)
+
+        def repl(lang, body, block):
+            if lang != "math":
+                return None
+            # Escaped for HTML; KaTeX auto-render reads the decoded text node.
+            tex = html.escape(body.strip(), quote=False)
+            placeholder = self.md.htmlStash.store(
+                f'<div class="math">\\[\n{tex}\n\\]</div>'
+            )
+            # Blank-line padding makes the placeholder its own block, so a fence
+            # hugging a paragraph doesn't end up as a <div> inside a <p>.
+            return f"\n{placeholder}\n"
+
+        new = replace_top_level_fences(text, repl)
+
+        if new != text:
+            self.md.tzara_has_latex = True
+        return new.split("\n")
+
+
 class LaTeXExtension(Extension):
     def extendMarkdown(self, md):
         md.tzara_has_latex = False
+        # 27: ahead of fenced_code (25), alongside jupyter/mermaid fences.
+        md.preprocessors.register(MathFencePreprocessor(md), "math_fence", 27)
         md.preprocessors.register(UnifiedMathPreprocessor(md), "unified-math", 9)
 
 

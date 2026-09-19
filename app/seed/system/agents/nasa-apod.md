@@ -24,6 +24,7 @@ Page format — output ONLY the markdown page, no preamble, no code fences:
 - If media_type is "image": the image embedded as `![<title>](<url>)` (use hdurl only if url is missing). If it is a video, link it instead: `[Watch today's video](<url>)`.
 - The explanation text as one or two paragraphs.
 - A credit line: `*Image credit: NASA APOD*`
+- If media_type is "image": a link to the high definition image as `[High Resolution](<hdurl>)`. 
 Use ONLY tool-returned data. Do NOT invent anything.
 
 # Tools

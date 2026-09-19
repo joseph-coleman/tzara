@@ -8,12 +8,21 @@
      Mod-P  open the palette            Mod-E  edit this page (on a page view)
 
    The palette searches this vault's pages. Prefixes switch what it lists:
-     >text        commands: header/footer links tagged `data-command`, plus
+     >text        commands: the page's links and buttons tagged `data-command`,
+                  those a page registers in `window.PaletteCommands`, plus
                   "Switch vault" and "Manage vaults"
      @text        vaults; Enter opens a vault's start page, Tab picks it
      @vault text  pages in another vault
    A page query with no exact match also offers to create that page, and any
    page query offers a full-text search.
+
+   A tagged element runs by el.click(). Optional attributes on it:
+     data-command-key="Mod-s"          its shortcut, shown beside the label
+     data-command-confirm="Question?"  asked before running from the palette
+   Disabled elements and those under a [hidden] ancestor are not listed; a
+   checkbox shows its on/off state. window.PaletteCommands entries are
+   {label, run, key?, when?}, for actions with no single element to click;
+   when() decides at each open whether the command applies.
 
    Pages come from GET /api/link-targets, the list the editor's [[ autocomplete
    uses, filtered the same way: notes and canvases only, agent run logs only
@@ -179,6 +188,16 @@ function vaultHref(vault) {
   return pageHref(vault.vault_id, vault.default_page || "Main");
 }
 
+// A CodeMirror-style key name for display: "Mod-Shift-d" -> "Ctrl+Shift+D"
+// ("Cmd+Shift+D" on macOS). Empty when there is no key.
+function shortcutLabel(key, mac) {
+  if (!key) return "";
+  return key.split("-").map((part) => {
+    if (part === "Mod") return mac ? "Cmd" : "Ctrl";
+    return part.length === 1 ? part.toUpperCase() : part;
+  }).join("+");
+}
+
 (function () {
   // How long a vault's page list is reused - the same freshness as the [[
   // autocomplete, so pages created in another tab show up on the next open.
@@ -223,19 +242,29 @@ function vaultHref(vault) {
     return vaults;
   }
 
-  // Commands are the page's own nav links, so each page offers exactly what
-  // its header and footer do (Edit only where editing applies, and so on).
+  // Commands are the page's own links and buttons, so each page offers exactly
+  // what it shows (Edit only where editing applies, Save only in the editor,
+  // and so on). The first element with a label wins.
   function commands() {
     const out = [];
     const seen = new Set();
+    const add = (cmd) => {
+      if (seen.has(cmd.label)) return;
+      seen.add(cmd.label);
+      out.push(cmd);
+    };
     for (const el of document.querySelectorAll("[data-command]")) {
-      const label = el.dataset.command;
-      if (seen.has(label)) continue;
-      seen.add(label);
-      out.push({ label, run: () => el.click(), href: el.getAttribute("href") });
+      if (el.disabled || el.closest("[hidden]")) continue;
+      const detail = [shortcutLabel(el.dataset.commandKey, isMac)];
+      if (el.type === "checkbox") detail.push(el.checked ? "on" : "off");
+      add({ label: el.dataset.command, run: () => el.click(), href: el.getAttribute("href"),
+            detail: detail.filter(Boolean).join(" · "), confirm: el.dataset.commandConfirm });
     }
-    out.push({ label: "Switch vault", fill: "@" });
-    out.push({ label: "Manage vaults", href: "/vaults" });
+    for (const c of window.PaletteCommands || []) {
+      if (!c.when || c.when()) add({ label: c.label, run: c.run, detail: shortcutLabel(c.key, isMac) });
+    }
+    add({ label: "Switch vault", fill: "@" });
+    add({ label: "Manage vaults", href: "/vaults" });
     return out;
   }
 
@@ -379,6 +408,7 @@ function vaultHref(vault) {
       return;
     }
     dialog.close();
+    if (item.confirm && !window.confirm(item.confirm)) return;
     if (item.run) item.run();
     else if (item.href) window.location.href = item.href;
   }

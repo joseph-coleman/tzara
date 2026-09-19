@@ -374,11 +374,15 @@ def _vault_root() -> str:
 
 
 def _rel_from_path(path: str) -> str:
-    """Vault-relative path (no ``wiki/`` prefix) for any file type, extension
-    preserved. Folder paths come back as e.g. ``"Projects/Sub"``."""
+    """Normalize a vault-relative path for any file type, extension preserved.
+    Folder paths come back as e.g. ``"Projects/Sub"``.
+
+    Callers (the /index file manager, the batch APIs) send paths that are already
+    vault-relative, so no action verb is stripped: a first segment of ``wiki/`` is a
+    real folder of that name, not a URL prefix."""
     from src.wikidoc import WikiDoc
 
-    d = WikiDoc.parse_url_path(path)
+    d = WikiDoc.parse_url_path(path, strip_reserved=False)
     if d["is_default_page_name"]:
         return ""  # bare root
     parts = [p for p in d["path_list"] if p] + [d["file_name"]]
@@ -449,6 +453,43 @@ def _prune_empty_dirs(rel_dirs: set[str]) -> None:
                 break
 
 
+def _prune_nested_items(items: list[str], rels: list[str]) -> list[str]:
+    """Drop selections that sit inside another selected folder.
+
+    The folder entry already carries them (preserving structure). Keeping them
+    would re-process the same source with its own immediate dir as the keep-root,
+    flattening it into the destination and overwriting the folder's
+    structure-preserving entry.
+    """
+    return [
+        raw
+        for raw, rel in zip(items, rels)
+        if not (rel and any(rel != p and rel.startswith(p + "/") for p in rels if p))
+    ]
+
+
+async def _resolve_item_files(item_rel: str) -> tuple[list[str], bool] | None:
+    """Expand one index selection into the concrete files it stands for.
+
+    Returns ``(files, is_dir)``, or None when nothing is there. A folder yields its
+    whole subtree plus the sibling folder-note (``<name>.md`` next to ``<name>/``),
+    so the folder entry as the index shows it travels as one unit. An extensionless
+    markdown doc id resolves to its ``.md`` file.
+    """
+    abs_item = _abs(item_rel)
+    if await asyncio.to_thread(os.path.isdir, abs_item):
+        files = await asyncio.to_thread(_walk_vault_files, abs_item)
+        sibling_md = _ensure_md(item_rel)
+        if await asyncio.to_thread(os.path.isfile, _abs(sibling_md)):
+            files.append(sibling_md)
+        return files, True
+    if await asyncio.to_thread(os.path.isfile, abs_item):
+        return [item_rel], False
+    if await asyncio.to_thread(os.path.isfile, _abs(_ensure_md(item_rel))):
+        return [_ensure_md(item_rel)], False
+    return None
+
+
 async def batch_move_op(items: list[str], destination: str, vault_id: str = DEFAULT_VAULT) -> dict:
     """Move a set of files and/or whole folders into ``destination`` (a folder), within
     ``vault_id``.
@@ -474,45 +515,24 @@ async def batch_move_op(items: list[str], destination: str, vault_id: str = DEFA
     def _skip(src: str, reason: str):
         skipped.append({"src": src, "reason": reason})
 
-    # Drop selections that sit inside another selected folder: the folder move
-    # already carries them (preserving structure). Keeping them would re-process
-    # the same source with its own immediate dir as the keep-root, flattening it
-    # into the destination and overwriting the folder's structure-preserving entry.
     rels = [_rel_from_path(r) for r in items]
-    kept = [
-        raw
-        for raw, rel in zip(items, rels)
-        if not (rel and any(rel != p and rel.startswith(p + "/") for p in rels if p))
-    ]
-
-    for raw in kept:
+    for raw in _prune_nested_items(items, rels):
         item_rel = _rel_from_path(raw)
         if not item_rel:
             _skip(raw, "invalid path")
             continue
-        abs_item = _abs(item_rel)
 
-        # Resolve the item into a concrete list of files to move.
-        if await asyncio.to_thread(os.path.isdir, abs_item):
+        found = await _resolve_item_files(item_rel)
+        if found is None:
+            _skip(item_rel, "not found")
+            continue
+        files, is_dir = found
+        if is_dir:
             # Refuse moving a folder into itself or a descendant.
             if dest_dir == item_rel or dest_dir.startswith(item_rel + "/"):
                 _skip(item_rel, "cannot move a folder into itself")
                 continue
-            files = await asyncio.to_thread(_walk_vault_files, abs_item)
             source_dirs.add(item_rel)
-            # Carry the sibling folder-note (`<name>.md` next to `<name>/`) so the
-            # whole folder entry as shown in the index moves as one unit. The
-            # parent-keep logic below lands it at `dest/<name>.md`.
-            sibling_md = _ensure_md(item_rel)
-            if await asyncio.to_thread(os.path.isfile, _abs(sibling_md)):
-                files.append(sibling_md)
-        elif await asyncio.to_thread(os.path.isfile, abs_item):
-            files = [item_rel]
-        elif await asyncio.to_thread(os.path.isfile, _abs(_ensure_md(item_rel))):
-            files = [_ensure_md(item_rel)]  # extensionless markdown doc id
-        else:
-            _skip(item_rel, "not found")
-            continue
 
         # Preserve everything from the item's parent downward, so a file keeps its
         # basename and a folder keeps its own name + internal structure.
@@ -569,17 +589,17 @@ async def _apply_deletes(rels: list[str]) -> None:
     """The single delete engine shared by ``delete_document_op`` and
     ``batch_delete_op``.
 
-    Removes each file on disk and records a debounced git removal. Callers own
+    Removes the files on disk and records a debounced git removal. Callers own
     validation, default-page guarding, and empty-dir pruning. Unlike the move
     engine, this deliberately does NOT rewrite inbound links (see
     ``delete_document_op``). The RAG database is reconciled by the file watcher.
     """
     # Canonical delete: checkpoint-before-delete -> os.remove -> git removal ->
-    # debounce, with git best-effort (a git hiccup never blocks the removal).
+    # debounce, with git best-effort (a git hiccup never blocks the removal). The
+    # whole set goes in ONE call so it costs one pair of commits, not one pair each.
     from src.wikidoc import WikiDoc
     vault = _active_vault.get()
-    for rel in rels:
-        await asyncio.to_thread(WikiDoc.delete_file, vault, rel)
+    await asyncio.to_thread(WikiDoc.delete_files, vault, rels)
 
 
 async def delete_document_op(rel: str, vault_id: str = DEFAULT_VAULT) -> dict:
@@ -656,3 +676,160 @@ async def batch_delete_op(items: list[str], vault_id: str = DEFAULT_VAULT) -> di
         len(to_delete), len(skipped),
     )
     return {"status": "ok", "deleted": to_delete, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# Copy (duplicate files + folders into a destination folder)
+# ---------------------------------------------------------------------------
+
+_COPY_SUFFIX = " copy"
+
+
+def _split_name(name: str) -> tuple[str, str]:
+    """Filename -> (stem, extension-with-dot); ('notes', '') when there is none."""
+    stem, dot, ext = name.rpartition(".")
+    return (stem, "." + ext) if dot and stem else (name, "")
+
+
+def _dest_taken(rel: str, claimed: set[str]) -> bool:
+    """Is this destination already spoken for -- on disk, or by an earlier item in
+    the same batch?"""
+    return rel in claimed or os.path.exists(_abs(rel))
+
+
+def _free_dest(dest_dir: str, stem: str, ext: str, claimed: set[str],
+               pair_md: bool = False) -> str:
+    """First unused ``dest_dir/<stem><suffix><ext>``: the bare name, then
+    ``<stem> copy``, ``<stem> copy 2``, ... A copy lands beside what it duplicates,
+    so unlike a move a taken name is a suffix to find, not a reason to refuse.
+
+    ``pair_md`` (a folder) also reserves the sibling folder-note name, so ``A/`` and
+    ``A.md`` stay paired rather than the note landing on some other folder's copy.
+    """
+    n = 0
+    while True:
+        suffix = "" if n == 0 else (_COPY_SUFFIX if n == 1 else f"{_COPY_SUFFIX} {n}")
+        base = "/".join(p for p in (dest_dir, stem + suffix) if p)
+        if not _dest_taken(base + ext, claimed) and not (
+                pair_md and _dest_taken(base + ".md", claimed)):
+            return base + ext
+        n += 1
+
+
+def _named_dest(raw: str, src_ext: str) -> tuple[str, str]:
+    """A user-typed copy name -> (stem, ext), keeping the source's extension.
+
+    The extension is appended when the typed name lacks it, so "APOD 2026-09-16"
+    becomes a .md page and a dot inside a name ("Report v1.2") is not mistaken for
+    one. Only the last path segment is honored -- this names a file, it does not
+    choose a folder (the picker does that).
+    """
+    name = raw.rsplit("/", 1)[-1].strip()
+    if src_ext and name.lower().endswith(src_ext.lower()):
+        return name[: -len(src_ext)], src_ext
+    return name, src_ext
+
+
+async def batch_copy_op(items: list[str], destination: str, vault_id: str = DEFAULT_VAULT,
+                        new_name: str = "") -> dict:
+    """Copy a set of files and/or whole folders into ``destination`` (a folder),
+    within ``vault_id``.
+
+    The counterpart to ``batch_move_op``, with three deliberate differences:
+
+      * nothing is rewritten -- the originals stay put, so existing ``[[links]]``
+        still mean the original document and the copy is simply a new page;
+      * a taken name gets a `` copy`` / `` copy 2`` suffix instead of being skipped,
+        so duplicating inside the same folder works;
+      * ``new_name`` (single selection only) renames the copy as it lands -- the
+        point of the operation when lifting an agent's output out of its run folder,
+        where the next run would otherwise overwrite it.
+
+    Each file is copied verbatim via ``WikiDoc.copy_file`` (no stamps, no EOL
+    rewrite) with its own git commit; the watcher indexes the new paths. Folders
+    keep their internal structure under one destination folder name.
+
+    Returns ``{status, copied: [{src, dest}], skipped: [{src, reason}]}``.
+    """
+    _active_vault.set(vault_id)
+    dest_dir = _rel_from_path(destination)
+    new_name = (new_name or "").strip().strip("/")
+
+    copy_map: dict[str, str] = {}
+    skipped: list[dict] = []
+    claimed: set[str] = set()
+
+    def _skip(src: str, reason: str):
+        skipped.append({"src": src, "reason": reason})
+
+    rels = [_rel_from_path(r) for r in items]
+    kept = _prune_nested_items(items, rels)
+    if new_name and len(kept) != 1:
+        return {"status": "error", "reason": "a name applies to a single item only",
+                "copied": [], "skipped": []}
+
+    for raw in kept:
+        item_rel = _rel_from_path(raw)
+        if not item_rel:
+            _skip(raw, "invalid path")
+            continue
+
+        found = await _resolve_item_files(item_rel)
+        if found is None:
+            _skip(item_rel, "not found")
+            continue
+        files, is_dir = found
+        if is_dir and (dest_dir == item_rel or dest_dir.startswith(item_rel + "/")):
+            _skip(item_rel, "cannot copy a folder into itself")
+            continue
+
+        # Name the landing spot ONCE per item, then hang the item's files off it.
+        # Suffixing per file instead would scatter a folder's contents into an
+        # existing folder of the same name rather than making a second folder.
+        base = (item_rel if is_dir else files[0]).rsplit("/", 1)[-1]
+        stem, ext = (base, "") if is_dir else _split_name(base)
+        if new_name:
+            stem, ext = _named_dest(new_name, ext)
+            dest_root = "/".join(p for p in (dest_dir, stem + ext) if p)
+            # An explicitly typed name is never silently suffixed: say it's taken.
+            if await asyncio.to_thread(_dest_taken, dest_root, claimed):
+                _skip(item_rel, f"destination already exists: {dest_root}")
+                continue
+        else:
+            dest_root = await asyncio.to_thread(
+                _free_dest, dest_dir, stem, ext, claimed, is_dir)
+
+        sibling_md = _ensure_md(item_rel)
+        for f in files:
+            if not is_dir:
+                dest_rel = dest_root
+            elif f == sibling_md:
+                dest_rel = dest_root + ".md"   # folder note follows its folder's name
+            else:
+                inner = os.path.relpath(f, item_rel).replace(os.sep, "/")
+                dest_rel = dest_root + "/" + inner
+            if await asyncio.to_thread(_dest_taken, dest_rel, claimed):
+                _skip(f, f"destination already exists: {dest_rel}")
+                continue
+            claimed.add(dest_rel)
+            copy_map[f] = dest_rel
+
+    if not copy_map:
+        return {"status": "noop", "copied": [], "skipped": skipped}
+
+    from src.wikidoc import WikiDoc
+    copied: list[dict] = []
+    for src_rel, dest_rel in copy_map.items():
+        try:
+            await asyncio.to_thread(WikiDoc.copy_file, vault_id, src_rel, dest_rel)
+        except Exception as e:
+            logger.exception("batch_copy_op: copy failed: %s -> %s", src_rel, dest_rel)
+            _skip(src_rel, f"copy failed: {e}")
+            continue
+        copied.append({"src": src_rel, "dest": dest_rel})
+
+    logger.info(
+        "batch_copy_op: copied %d file(s) into %s (%d skipped)",
+        len(copied), dest_dir or "<root>", len(skipped),
+    )
+    return {"status": "ok", "copied": copied, "skipped": skipped}

@@ -7,7 +7,8 @@ from pathlib import Path
 import logging
 import subprocess
 import time
-from config import VERSIONING_EMAIL, VERSIONING_NAME, vault_abs_root, vault_git_dir
+from config import (VERSIONING_EMAIL, VERSIONING_NAME, is_versioned_file,
+                    vault_abs_root, vault_git_dir)
 from src import timefmt
 from difflib import unified_diff
 import os
@@ -47,7 +48,7 @@ class MarkdownGitVersioning:
         return ["git", "-C", str(self.folder),
                 f"--git-dir={self.git_dir}", f"--work-tree={self.work_tree}", *args]
 
-    def _run_git(self, *args, check=True, env=None):
+    def _run_git(self, *args, check=True, env=None, retry=True):
         """Execute a git command against this vault's separated repo.
 
         --git-dir/--work-tree are pinned explicitly (absolute, container-side) so git
@@ -60,25 +61,30 @@ class MarkdownGitVersioning:
         was the residual `git add` exit-128 flake that per-file debounce couldn't
         cover (cross-file contention between the server's commit and the worker's
         watcher commit).
+
+        `retry=False` opts out for calls whose lock-shaped stderr is NOT transient:
+        `update-ref`'s compare-and-swap failure reads "cannot lock ref ... is at X but
+        expected Y", which retrying with the same stale old value can only repeat.
+        _commit_staged handles that one by rebuilding on the new HEAD instead.
         """
         cmd = self._git_cmd(*args)
-        result = None
-        for attempt in range(6):
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, encoding="utf-8",
-                check=False, env=env,
-            )
-            if result.returncode == 0:
-                return result
-            stderr = result.stderr or ""
-            if attempt < 5 and any(sig in stderr for sig in self._GIT_LOCK_SIGS):
-                time.sleep(0.1 * (attempt + 1))  # 0.1,0.2,..0.5s -> ~1.5s total
-                continue
-            break
-        if check and result is not None and result.returncode != 0:
+        result = self._spawn(cmd, env)
+        for attempt in range(5):
+            if result.returncode == 0 or not retry:
+                break
+            if not any(sig in (result.stderr or "") for sig in self._GIT_LOCK_SIGS):
+                break
+            time.sleep(0.1 * (attempt + 1))  # 0.1,0.2,..0.5s -> ~1.5s total
+            result = self._spawn(cmd, env)
+        if check and result.returncode != 0:
             raise subprocess.CalledProcessError(
                 result.returncode, cmd, output=result.stdout, stderr=result.stderr)
         return result
+
+    @staticmethod
+    def _spawn(cmd: list[str], env: dict | None) -> subprocess.CompletedProcess:
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              check=False, env=env)
 
     def _init_repo(self):
         """Ensure a git repository exists at self.folder. Idempotent AND cheap.
@@ -168,9 +174,10 @@ class MarkdownGitVersioning:
         except subprocess.CalledProcessError:
             pass  # no HEAD yet
 
-    # git reports an empty commit on STDOUT, not stderr.
-    _NOTHING_TO_COMMIT_SIGS = ("nothing to commit", "no changes added to commit",
-                               "nothing added to commit")
+    # `update-ref`'s compare-and-swap rejection: "is at <sha> but expected <sha>".
+    _CAS_FAIL_SIG = "but expected"
+    # Cap on pathspecs per `git add` so a large batch cannot overflow ARG_MAX.
+    _ADD_CHUNK = 256
 
     @staticmethod
     def _author_env(author_name: str, author_email: str) -> dict:
@@ -183,33 +190,134 @@ class MarkdownGitVersioning:
         })
         return env
 
-    def _commit_staged(self, message: str, env: dict, what: str = "") -> str | None:
-        """Commit whatever is staged. Returns the SHA, or None if nothing was staged.
+    def _rel(self, file_path: str) -> str:
+        """Vault-relative POSIX path for a path under the vault root, given absolute,
+        relative to CWD (``vaults/<slug>/...``), or already vault-relative.
 
-        An empty index is a no-op, not a server error: `git commit` exits 1 with
-        "nothing to commit", which as a raised CalledProcessError surfaced to the
-        user as a 500 on save. It is still worth a warning -- reaching here means a
-        caller staged a path git did not match (e.g. a pathspec whose directory case
-        differs from the index, which `git add` accepts while staging nothing).
+        self.folder is whatever the caller built the tracker on - relative
+        vault_root (worker, content_ops) or absolute vault_abs_root (WikiDoc) - so
+        try it first, then both forms of the work tree for the mixed cases."""
+        p = Path(file_path)
+        for base in (self.folder, Path(self.work_tree),
+                     Path(os.path.relpath(self.work_tree))):
+            try:
+                return p.relative_to(base).as_posix()
+            except ValueError:
+                pass
+        return p.as_posix()
+
+    def _stage(self, rel_paths: list[str]) -> None:
+        """Stage every path: additions, modifications AND removals -- `git add` on a
+        path whose file is gone records its deletion. Pathspec-limited, so the cost
+        is per-path and not per-repo; chunked to stay under ARG_MAX."""
+        for i in range(0, len(rel_paths), self._ADD_CHUNK):
+            self._run_git("add", "--", *rel_paths[i:i + self._ADD_CHUNK])
+
+    def _head_and_tree(self) -> tuple[str, str]:
+        """(HEAD sha, HEAD tree sha), or ('', '') on an unborn branch."""
+        res = self._run_git("rev-parse", "HEAD", "HEAD^{tree}", check=False)
+        if res.returncode != 0:
+            return "", ""
+        parts = res.stdout.split()
+        return (parts[0], parts[1]) if len(parts) == 2 else ("", "")
+
+    def _commit_staged(self, message: str, env: dict, what: str = "") -> str | None:
+        """Commit whatever is staged. Returns the SHA, or None if nothing changed.
+
+        Built from plumbing (write-tree -> commit-tree -> update-ref) rather than
+        `git commit`, because porcelain commit first REFRESHES the index: an lstat of
+        every tracked entry. Over the 9p vault mount that refresh IS the cost of a
+        commit -- ~1.0s for a 500-file vault against ~0.03s to write the tree the
+        index already describes -- and it scales with the vault, not the change. It
+        buys nothing here: callers stage the exact paths they touched.
+
+        Comparing the new tree to HEAD's is also a sounder "nothing to commit" test
+        than parsing porcelain's message. It is content-based, so .gitattributes EOL
+        normalization is accounted for (an on-disk CRLF file whose blob is LF reads as
+        unchanged) and an empty commit is a quiet no-op rather than the exit-1 that
+        once surfaced as a 500 on save.
+
+        update-ref is a compare-and-swap against the HEAD we parented onto, so a
+        commit racing the worker's watcher is rejected rather than silently dropping
+        one side; the retry rebuilds the tree on the new HEAD.
         """
-        result = self._run_git("commit", "-m", message, env=env, check=False)
-        if result.returncode != 0:
-            blob = (result.stdout or "") + (result.stderr or "")
-            if any(sig in blob for sig in self._NOTHING_TO_COMMIT_SIGS):
-                logger.warning(
-                    "git commit found nothing staged for %r (%s) - skipping commit.",
-                    what or message, self.git_dir)
+        for attempt in range(4):
+            head, head_tree = self._head_and_tree()
+            tree = self._run_git("write-tree").stdout.strip()
+            if tree == head_tree:
+                logger.debug("nothing to commit for %r (%s)", what or message, self.git_dir)
                 return None
+            parents = ("-p", head) if head else ()
+            sha = self._run_git(
+                "commit-tree", tree, *parents, "-m", message, env=env).stdout.strip()
+            # An empty oldvalue asserts "HEAD must not exist yet" (initial commit).
+            res = self._run_git("update-ref", "-m", message, "HEAD", sha, head,
+                                check=False, retry=False)
+            if res.returncode == 0:
+                return sha
+            stderr = res.stderr or ""
+            if attempt < 3 and (self._CAS_FAIL_SIG in stderr
+                                or any(sig in stderr for sig in self._GIT_LOCK_SIGS)):
+                logger.info("HEAD moved under commit %r - rebuilding", what or message)
+                time.sleep(0.05 * (attempt + 1))
+                continue
             raise subprocess.CalledProcessError(
-                result.returncode, self._git_cmd("commit", "-m", message),
-                output=result.stdout, stderr=result.stderr)
-        return self._run_git("rev-parse", "HEAD").stdout.strip()
+                res.returncode, self._git_cmd("update-ref", "HEAD"),
+                output=res.stdout, stderr=res.stderr)
 
     def _commit(self, rel_path: str, message: str, author_name: str, author_email: str) -> str | None:
-        """Stage a file and commit. Returns the commit SHA, or None if nothing staged."""
-        self._run_git("add", "--", str(rel_path))
+        """Stage a file and commit. Returns the commit SHA, or None if nothing changed."""
+        self._stage([str(rel_path)])
         env = self._author_env(author_name, author_email)
         return self._commit_staged(message, env, what=str(rel_path))
+
+    def commit_paths(
+        self,
+        file_paths: list[str],
+        message: str,
+        author_name: str = VERSIONING_NAME,
+        author_email: str = VERSIONING_EMAIL,
+    ) -> str | None:
+        """Stage many paths and record ONE commit. Returns the SHA, or None when
+        nothing changed.
+
+        The batch entry point behind remove_files. Staging is pathspec-limited and
+        cheap while a commit is not, so N paths cost N cheap `git add`s and a single
+        commit -- the difference between a folder delete that scales with the folder
+        and one that scales with the repo. Paths may be absolute or vault-relative and
+        need not exist (a vanished path stages as a removal).
+        """
+        if not file_paths:
+            return None
+        self._init_repo()
+        rels = [self._rel(p) for p in file_paths]
+        self._stage(rels)
+        env = self._author_env(author_name, author_email)
+        what = rels[0] if len(rels) == 1 else f"{rels[0]} +{len(rels) - 1} more"
+        commit_sha = self._commit_staged(message, env, what=what)
+        self._maybe_update_commit_graph()
+        return commit_sha
+
+    def _is_text(self, file_path: str) -> bool:
+        """Does this file belong in history at all -- i.e. is it UTF-8 text?
+
+        The vault repo exists to diff prose; a committed binary bloats that history
+        permanently and irreversibly (see config.is_versioned_file). The test is
+        content-based rather than extension-based because the content writers also
+        version text control files that are not DOCUMENT_FILE_TYPES -- a vault's
+        .tzara/config.json and .gitattributes.
+        """
+        try:
+            Path(file_path).read_text(encoding="utf-8")
+            return True
+        except (UnicodeDecodeError, OSError):
+            return False
+
+    def checkpoint_paths(self, file_paths: list[str], message: str) -> str | None:
+        """Commit any pending edits to these paths, so a following mutation is
+        cleanly revertable. Binaries are filtered out (see _is_text); an already-clean
+        set is a no-op. The batch form of save_version's checkpoint role."""
+        return self.commit_paths([p for p in file_paths if self._is_text(p)], message)
 
     def remove_file(
         self,
@@ -218,12 +326,58 @@ class MarkdownGitVersioning:
         author_email: str = VERSIONING_EMAIL,
         message: str = None,
     ):
-        self._init_repo()
+        return self.remove_files([file_path], author_name, author_email, message)
 
+    def remove_files(
+        self,
+        file_paths: list[str],
+        author_name: str = VERSIONING_NAME,
+        author_email: str = VERSIONING_EMAIL,
+        message: str = None,
+    ):
+        """Record the removal of many files in ONE commit.
+
+        Content-blind like add_file/move_file: it stages paths without reading them,
+        so a binary that leaked into history earlier can still be removed from it.
+        """
+        if not file_paths:
+            return None
+        if message is None:
+            message = (f"Delete {Path(file_paths[0]).name}" if len(file_paths) == 1
+                       else f"Delete {len(file_paths)} files")
+        # Raw paths: commit_paths does the one _rel. Relativizing twice strips a
+        # vault folder literally named vaults/<slug>/ a second time.
+        return self.commit_paths(file_paths, message, author_name, author_email)
+
+    def add_file(
+        self,
+        file_path: str,
+        author_name: str = VERSIONING_NAME,
+        author_email: str = VERSIONING_EMAIL,
+        message: str = None,
+    ):
+        """Record a newly created file (copy, import) in git history.
+
+        Only first-class DOCUMENTS are committed (config.is_versioned_file): an
+        attachment lives in the vault and is served from it, but must never enter
+        the history, where a binary would bloat the repo permanently. Non-documents
+        return None -- the caller's file is already written to disk, so this refuses
+        the commit, not the operation.
+
+        Content-blind otherwise, like remove_file/move_file: it stages the path
+        without reading it (unlike save_version, which decodes the file to diff it
+        against HEAD and would raise on binary content).
+        """
         rel_path = Path(file_path).relative_to(self.folder)
 
+        if not is_versioned_file(str(rel_path)):
+            logger.info("add_file: not a versioned document type, skipping %s", rel_path)
+            return None
+
+        self._init_repo()
+
         if message is None:
-            message = f"Delete {rel_path.name}"
+            message = f"Add {rel_path.name}"
 
         commit_sha = self._commit(str(rel_path), message, author_name, author_email)
         self._maybe_update_commit_graph()
@@ -280,28 +434,33 @@ class MarkdownGitVersioning:
 
         Returns:
             The commit SHA if changes were committed, None if no changes detected
+            or the file is not a text document.
         """
         self._init_repo()
 
         rel_path = Path(file_path).relative_to(self.folder)
+        file_full_path = self.folder / rel_path
 
-        # Check if file has changed compared to HEAD
-        try:
-            head_result = self._run_git("show", f"HEAD:{rel_path}", check=True)
-            # Compare HEAD content with current file on disk
-            file_full_path = self.folder / rel_path
-            current_content = file_full_path.read_text(encoding="utf-8")
-            if current_content == head_result.stdout:
-                return None
-        except subprocess.CalledProcessError:
-            # No HEAD or file not in HEAD (new repo or new file) - proceed to commit
-            pass
+        # Reading the file is both the change check and the binary gate: a file that
+        # is not UTF-8 text must not enter history, and decoding one used to raise
+        # straight out of here (callers swallowed it, and a delete then removed the
+        # file from disk without ever recording the removal).
+        if not self._is_text(str(file_full_path)):
+            logger.info("save_version: %s is not UTF-8 text - not versioning it", rel_path)
+            return None
+        current_content = file_full_path.read_text(encoding="utf-8")
+
+        # Unchanged against HEAD -> nothing to do. A missing HEAD or a file not yet in
+        # it (new repo, new file) falls through to the commit.
+        head_result = self._run_git("show", f"HEAD:{rel_path}", check=False)
+        if head_result.returncode == 0 and current_content == head_result.stdout:
+            return None
 
         if message is None:
             message = f"Update {rel_path.name}"
 
         commit_sha = self._commit(str(rel_path), message, author_name, author_email)
-        self._update_commit_graph()
+        self._maybe_update_commit_graph()
         return commit_sha
 
     def file_in_repo(self, file_path: str):

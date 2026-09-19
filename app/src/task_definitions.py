@@ -43,6 +43,7 @@ from src.task_tracker import PENDING_KEY, PROGRESS_PREFIX, RESULT_TTL, preseed_p
 from src.file_watcher import (
     CANCELLED_SET,
     WRITE_DEBOUNCE_TTL,
+    exists_exact,
     watcher_debounce_key,
     watcher_task_id,
 )
@@ -1117,6 +1118,12 @@ async def remove_document_task(file_path: str, vault_id: str = DEFAULT_VAULT) ->
     if await _is_cancelled("remove_document_task", file_path, vault_id):
         print(f"remove_document_task: cancelled for {file_path}")
         return {"status": "skipped", "reason": "cancelled by contradicting event"}
+    if exists_exact(os.path.join(vault_root(vault_id), file_path)):
+        # Recreated (or never really gone) before this ran; a create/modify
+        # task owns it now. Removing would ghost a live page and commit a
+        # bogus delete.
+        print(f"remove_document_task: skipping {file_path} (file exists)")
+        return {"status": "skipped", "reason": "file exists"}
     from src.rag_indexer import remove_document
     result = await remove_document(file_path, vault_id)
     await _git_version_remove(file_path, vault_id)

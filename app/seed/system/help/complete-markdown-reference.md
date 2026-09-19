@@ -360,19 +360,36 @@ Footnotes[^3] have three components.  A name, a reference, and a definition.  Th
 
 # LaTeX
 
-You can specify LaTeX in your page using two variations of inline and two variations of block LaTeX.  If LaTeX is detected on a page, then some [KaTeX](https://katex.org/) javascript is used using the content distribution network `jsdeliver.net`. 
+You can specify LaTeX in your page using two variations of inline and three variations of block LaTeX.  If LaTeX is detected on a page, then some [KaTeX](https://katex.org/) javascript is used using the content distribution network `jsdeliver.net`. 
 
-```markdown
+````markdown
 Some inline formula examples,  $E=mc^{2}$, and \( F=ma \).
 And some block examples:
 $$ e^{i \pi} + 1 = 0$$
-and also \[ e^{x} = \sum^{\infty}_{n=0} \frac{x^{n}}{n!} \].
+and also \[ e^{x} = \sum^{\infty}_{n=0} \frac{x^{n}}{n!}. \]
+
+```math
+\begin{align}
+\nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \\
+\nabla \cdot \mathbf{B} &= 0
+\end{align}
+```
+````
+
+Some inline formula examples,  $E=mc^{2}$, and \( F=ma \).
+And some block examples:
+$$ e^{i \pi} + 1 = 0$$
+and also \[ e^{x} = \sum^{\infty}_{n=0} \frac{x^{n}}{n!}. \]
+
+```math
+\begin{align}
+\nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \\
+\nabla \cdot \mathbf{B} &= 0
+\end{align}
 ```
 
-Some inline formula examples,  $E=mc^{2}$, and \( F=ma \).
-And some block examples:
-$$ e^{i \pi} + 1 = 0$$
-and also \[ e^{x} = \sum^{\infty}_{n=0} \frac{x^{n}}{n!} \].
+The `` ```math `` fence is the same syntax GitHub uses to display math, and nothing inside it is read as markdown, so `$`, `_`, `*` and `%%` are safe there. To show LaTeX *source* as a code block instead, use `` ```latex ``.
+
 
 # Tables
 

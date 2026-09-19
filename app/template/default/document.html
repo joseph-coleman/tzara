@@ -47,15 +47,20 @@
       /* Index file-manager (move UI). Themed with the wiki's CSS variables. */
       #idx-toolbar {
         position: sticky; top: 0; z-index: 20;
-        display: flex; align-items: center; gap: 0.6em;
+        display: flex; flex-direction: column; gap: 0.35em;
         margin: 0 0 0.8em 0; padding: 0.45em 0.7em;
         background: var(--lightest); border: 1px solid var(--darker);
         border-radius: var(--radius-md); font-size: var(--text-smd);
       }
+      /* Two rows: selection-scoped FILE OPERATIONS above, whole-tree VIEW controls
+         below (nearest the tree they act on). Each row wraps on its own, so a narrow
+         window never interleaves the two groups. */
+      .idx-bar { display: flex; align-items: center; gap: 0.6em; flex-wrap: wrap; }
+      .idx-bar-view { border-top: 1px solid var(--darker); padding-top: 0.35em; }
       #idx-toolbar.idx-has-sel { border-color: var(--base-color); background: var(--lighter); }
       #idx-count { font-weight: 600; min-width: 6em; }
       #idx-toolbar button {
-        cursor: pointer; padding: 0.25em 0.7em;
+        cursor: pointer; padding: 0.25em 0.7em; white-space: nowrap;
         background: var(--base-color); color: var(--foreground);
         border: 1px solid var(--darker); border-radius: var(--radius-sm);
       }
@@ -108,7 +113,10 @@
         box-shadow: 0 8px 30px rgb(from var(--darkest) r g b / 0.25);
       }
       .idx-modal-head { font-weight: 600; margin-bottom: 0.6em; }
-      .idx-pick-filter {
+      .idx-pick-label {
+        display: block; margin-bottom: 0.6em; font-size: var(--text-smd);
+      }
+      .idx-pick-filter, .idx-pick-name {
         width: 100%; box-sizing: border-box; margin: 0 0 0.6em 0;
         padding: 0.35em 0.5em; font-size: 0.95em;
         background: var(--lightest); color: var(--fg-color);

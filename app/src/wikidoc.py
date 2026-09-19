@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
@@ -718,11 +719,22 @@ class WikiDoc:
         """Set the git:debounce key. A write we just committed is ours; the file
         watcher must skip its own duplicate git commit (it still reindexes -
         wanted). 10s TTL matches the async reader the watcher chain uses."""
+        WikiDoc.set_debounce_many(vault_id, [rel])
+
+    @staticmethod
+    def set_debounce_many(vault_id: str, rels: list[str]) -> None:
+        """set_debounce for many paths over ONE Redis connection. A batch delete
+        would otherwise pay a connect/close round trip per file."""
+        if not rels:
+            return
         from src.task_broker import get_sync_redis
         try:
             r = get_sync_redis()
             try:
-                r.set(WikiDoc.debounce_key(vault_id, rel), "1", ex=10)
+                pipe = r.pipeline()
+                for rel in rels:
+                    pipe.set(WikiDoc.debounce_key(vault_id, rel), "1", ex=10)
+                pipe.execute()
             finally:
                 r.close()
         except Exception:
@@ -775,19 +787,43 @@ class WikiDoc:
     @staticmethod
     def delete_file(vault_id: str, rel: str, *, message: str | None = None,
                     checkpoint: bool = True) -> None:
-        """Delete a vault document: checkpoint-before-delete (commit any pending
-        edits so the removal is cleanly revertable) -> os.remove -> attributed
-        git removal -> watcher debounce.
+        """Delete one vault document. The single-path case of delete_files."""
+        WikiDoc.delete_files(vault_id, [rel], message=message, checkpoint=checkpoint)
+
+    @staticmethod
+    def delete_files(vault_id: str, rels: list[str], *, message: str | None = None,
+                     checkpoint: bool = True) -> list[str]:
+        """Delete vault documents: watcher debounce -> one checkpoint-before-delete
+        commit (so the removal is cleanly revertable) -> os.remove each -> one
+        attributed git removal. Returns the paths actually removed.
+
+        Batched down to a fixed TWO commits regardless of how many files, because a
+        commit costs what the repo costs, not what the change costs. Per-file commits
+        made a folder delete scale as (files x repo).
+
+        The debounce is set BEFORE any git op for the reason WikiDoc.commit documents:
+        the watcher's own git task for these paths must skip rather than race our
+        commits on the repo index lock. It is re-armed afterwards so its TTL also
+        covers the deletion events the removals themselves raise.
 
         Git operations are best-effort: a git failure logs but never blocks the
-        actual file removal (a delete must not be held hostage by versioning; the
-        watcher reconciles the DB regardless). No-op if the file is absent.
+        removals (a delete must not be held hostage by versioning; the watcher
+        reconciles the DB regardless). Absent files are skipped.
         """
         from config import USE_GIT_VERSIONING
-        abs_path = WikiDoc._abs_checked(vault_id, rel)
-        rel_n = WikiDoc._norm_rel(rel)
-        if not os.path.isfile(abs_path):
-            return
+        targets = []  # [(abs_path, normalized vault-relative path)]
+        for rel in rels:
+            abs_path = WikiDoc._abs_checked(vault_id, rel)
+            if os.path.isfile(abs_path):
+                targets.append((abs_path, WikiDoc._norm_rel(rel)))
+        if not targets:
+            return []
+        abs_paths = [a for a, _ in targets]
+        rel_names = [r for _, r in targets]
+        label = rel_names[0] if len(targets) == 1 else f"{len(targets)} files"
+
+        WikiDoc.set_debounce_many(vault_id, rel_names)
+
         vt = None
         if USE_GIT_VERSIONING:
             try:
@@ -796,17 +832,60 @@ class WikiDoc:
                 vault_registry.init_vault_repo(vault_id)
                 vt = MarkdownGitVersioning(vault_abs_root(vault_id))
                 if checkpoint:
-                    vt.save_version(abs_path, message=f"checkpoint before delete: {rel_n}")
+                    vt.checkpoint_paths(
+                        abs_paths, message=f"checkpoint before delete: {label}")
             except Exception:
-                logger.exception("delete_file: checkpoint/tracker failed %s:%s", vault_id, rel_n)
+                logger.exception("delete_files: checkpoint/tracker failed %s:%s",
+                                 vault_id, label)
                 vt = None
-        os.remove(abs_path)
+
+        for abs_path in abs_paths:
+            os.remove(abs_path)
+
         if vt is not None:
             try:
-                vt.remove_file(abs_path, message=message or f"Delete {rel_n}")
+                vt.remove_files(abs_paths, message=message or f"Delete {label}")
             except Exception:
-                logger.exception("delete_file: git remove failed %s:%s", vault_id, rel_n)
-        WikiDoc.set_debounce(vault_id, rel_n)
+                logger.exception("delete_files: git remove failed %s:%s", vault_id, label)
+
+        WikiDoc.set_debounce_many(vault_id, rel_names)
+        return rel_names
+
+    @staticmethod
+    def copy_file(vault_id: str, src_rel: str, dest_rel: str, *,
+                  message: str | None = None) -> None:
+        """Copy a vault file to a new vault-relative path: byte-for-byte write ->
+        attributed git commit of the new path -> watcher debounce.
+
+        Verbatim on purpose - no EOL normalization and no `Updated:` stamp, so a
+        copy is a faithful snapshot of its source (a CRLF page stays CRLF, an
+        agent's output keeps the timestamps it was written with). That is why this
+        does not route through `commit`, whose job is the opposite: stamping a
+        document someone just edited.
+
+        Both paths are traversal-checked; the destination's folder is created. The
+        git commit is best-effort (a git hiccup never blocks the copy) and the RAG
+        database is reconciled by the file watcher's on_created.
+        """
+        from config import USE_GIT_VERSIONING
+        src_abs = WikiDoc._abs_checked(vault_id, src_rel)
+        dest_abs = WikiDoc._abs_checked(vault_id, dest_rel)
+        dest_n = WikiDoc._norm_rel(dest_rel)
+        if not os.path.isfile(src_abs):
+            raise FileNotFoundError(src_rel)
+
+        os.makedirs(os.path.dirname(dest_abs), exist_ok=True)
+        shutil.copyfile(src_abs, dest_abs)
+        WikiDoc.set_debounce(vault_id, dest_n)
+
+        if USE_GIT_VERSIONING:
+            try:
+                from src import vault_registry
+                vault_registry.init_vault_repo(vault_id)
+                WikiDoc._tracker(vault_id).add_file(
+                    dest_abs, message=message or f"Copy {WikiDoc._norm_rel(src_rel)} to {dest_n}")
+            except Exception:
+                logger.exception("copy_file: git add failed %s:%s", vault_id, dest_n)
 
     @staticmethod
     def validate_path(file_path: str, base_dir: str) -> Path:
@@ -1182,25 +1261,32 @@ class WikiDoc:
         return content[span[1] + 4 :]
 
     @staticmethod
-    def parse_url_path(path: str, default_page: str = DEFAULT_WIKI_PAGE):
+    def parse_url_path(path: str, default_page: str = DEFAULT_WIKI_PAGE,
+                       strip_reserved: bool = True):
         """Helper to break url into some commonly used component.
-        
+
         Input a URL path or file path and outputs a dictionary
-        of usefull variations. 
-        
+        of usefull variations.
+
         Example Input:
         /wiki/notes/personal/birthdays.md
-        
+
         Example Returns:
         {
-            'path': 'notes/personal', 
-            'path_list': ['notes', 'personal'], 
-            'file_name': 'birthdays.md', 
-            'file_ext': 'md', 
-            'file_name_no_ext': 'birthdays', 
+            'path': 'notes/personal',
+            'path_list': ['notes', 'personal'],
+            'file_name': 'birthdays.md',
+            'file_ext': 'md',
+            'file_name_no_ext': 'birthdays',
             'is_default_page_name': False
         }
-        
+
+        ``strip_reserved`` drops a leading action verb (RESERVED_PATHS: wiki, edit,
+        search, ...), which is right for a URL but WRONG for a vault-relative path:
+        a vault may legitimately contain a folder named "wiki" or "search", and
+        stripping it yields a path that does not exist on disk. Pass False whenever
+        the input is already vault-relative (index enumeration, file-manager
+        payloads, resolved wikilink targets).
         """
         is_default_page_name = False
 
@@ -1214,7 +1300,7 @@ class WikiDoc:
         path_split = path.split("/")
         path_split = [each for each in path_split if each]
 
-        if path_split and path_split[0] in RESERVED_PATHS:
+        if strip_reserved and path_split and path_split[0] in RESERVED_PATHS:
             path_split.pop(0)
 
         if path_split:
@@ -1314,7 +1400,8 @@ class WikiDoc:
         resolved_path = "/".join(parts)
 
         # resolved_path = path.resolve()
-        url_pieces = WikiDoc.parse_url_path(resolved_path)
+        # Already vault-relative: a leading "wiki"/"search"/... is a real folder here.
+        url_pieces = WikiDoc.parse_url_path(resolved_path, strip_reserved=False)
         file_exists = WikiDoc.markdown_file_exists(url_pieces, any_type=True, vault=vault)
 
         if not file_exists:

@@ -80,6 +80,7 @@ from src.doc_templates import starter_document
 
 from src.frontmatter import merged_tags
 from src.doctransform import MarkdownDocTransform
+from src.markdown_extensions import absolutize_relative_urls
 from src.docversioning import MarkdownGitVersioning
 from src.jupyter_client import jupyter_manager, format_execution_message
 from src import kernel_api
@@ -1270,6 +1271,47 @@ async def batch_move_endpoint(request: Request):
     return JSONResponse(result, status_code=code)
 
 
+# /api/batch-copy
+async def batch_copy_endpoint(request: Request):
+    """Copy many files and/or whole folders into a destination folder (JSON API).
+
+    The originals stay put and no [[links]] are rewritten -- a copy is a new page,
+    not a relocation. A name already in use is suffixed (" copy", " copy 2"), so
+    duplicating in place works; the optional "name" (single item only) renames the
+    copy as it lands. Body: {"items": [...], "destination": "...", "name": "..."}.
+    ``destination`` is a folder (empty string or "/" means the vault root). Returns
+    {status, copied, skipped}.
+    """
+    from src import content_ops
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"status": "error", "reason": "invalid JSON body"}, status_code=400
+        )
+
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        return JSONResponse(
+            {"status": "error", "reason": "items (a non-empty list) is required"},
+            status_code=400,
+        )
+    if "destination" not in data:
+        return JSONResponse(
+            {"status": "error", "reason": "destination is required"}, status_code=400
+        )
+    destination = (data.get("destination") or "").strip()
+    new_name = (data.get("name") or "").strip()
+    vault = (data.get("vault") or DEFAULT_VAULT).strip()
+    if not vault_registry.vault_exists(vault):
+        return JSONResponse({"status": "error", "reason": f"unknown vault: {vault}"}, status_code=404)
+
+    result = await content_ops.batch_copy_op(items, destination, vault, new_name)
+    code = 200 if result["status"] in ("ok", "noop") else 400
+    return JSONResponse(result, status_code=code)
+
+
 # /api/batch-delete
 async def batch_delete_endpoint(request: Request):
     """Delete many files and/or whole folders (JSON API).
@@ -1436,7 +1478,10 @@ async def index_document(request: Request):
     file_list = [f for f in file_list if f not in parent_paths]
 
     for each in file_list:
-        d = WikiDoc.parse_url_path(each)
+        # get_index() paths are vault-relative, so no action verb to strip -- a
+        # vault folder literally named "wiki"/"search"/... must survive intact or
+        # its rows sort under the wrong parent and name files that don't exist.
+        d = WikiDoc.parse_url_path(each, strip_reserved=False)
         is_md = d["file_ext"] == "md"
         if is_md:
             # Fold the .md stem into path_list so tree-walking treats
@@ -3752,44 +3797,6 @@ async def link_headings_endpoint(request: Request):
         _link_headings, vault, _link_source_dir(request), target))
 
 
-# href/src attribute whose value is a URL we may need to resolve against a
-# document's vault/path. Captures the quote style so it round-trips unchanged.
-_URL_ATTR_RE = re.compile(
-    r"""(?P<attr>\b(?:href|src))\s*=\s*(?P<q>["'])(?P<url>[^"']*)(?P=q)""",
-    re.IGNORECASE,
-)
-
-# A URL that already carries its own resolution context and must be left alone:
-# fragment-only (#...), root-absolute (/...), protocol-relative (//...), or any
-# scheme (http:, https:, mailto:, data:, tel:, ...).
-_ABSOLUTE_URL_RE = re.compile(r"^(?:#|/|//|[a-zA-Z][a-zA-Z0-9+.\-]*:)")
-
-
-def _absolutize_relative_urls(html: str, prefix: str) -> str:
-    """Prefix relative ``href``/``src`` URLs in an HTML fragment with ``prefix``.
-
-    This replaces the older page-global ``<base href=...>`` tag that
-    ``/api/markdown/`` used to prepend. A ``<base>`` element is *document-wide*:
-    when this fragment is injected into a host page -- a canvas embed, a chat
-    bubble, or the edit-preview pane -- its ``<base>`` hijacks every relative
-    URL on the *whole* page, including a document's own ``[TOC]`` "#anchor"
-    links, which then resolve against ``/wiki/{vault}/`` instead of the current
-    page. Rewriting each relative URL to an absolute one keeps embedded link and
-    image references in-vault without that page-wide trap. URLs that are already
-    absolute, protocol-relative, scheme-qualified, or fragment-only are left as
-    is (the browser still normalizes ``..`` segments in the result).
-    """
-
-    def _sub(match: "re.Match") -> str:
-        url = match.group("url")
-        if not url or _ABSOLUTE_URL_RE.match(url):
-            return match.group(0)
-        q = match.group("q")
-        return f'{match.group("attr")}={q}{prefix}{url}{q}'
-
-    return _URL_ATTR_RE.sub(_sub, html)
-
-
 # /api/markdown/
 async def markdown_convert(request: Request):
     # This is for the preview button
@@ -3819,8 +3826,8 @@ async def markdown_convert(request: Request):
     # Resolve relative link/image URLs against the document's vault/path here,
     # rather than emitting a page-global <base> tag that leaks into whatever host
     # page injects this fragment (canvas embed, chat, edit preview) and breaks
-    # its own "#anchor"/relative links. See _absolutize_relative_urls.
-    html = _absolutize_relative_urls(html, prefix)
+    # its own "#anchor"/relative links. See absolutize_relative_urls.
+    html = absolutize_relative_urls(html, prefix)
 
     # print("#### api/markdown/  this should have codehilite classes, right? ###")
     # print(raw_markdown)
@@ -4899,6 +4906,7 @@ routes = [
     Route("/api/kernel/{vault}/query", endpoint=kernel_query_endpoint, methods=["POST"]),
     Route("/api/move", endpoint=move_document_endpoint, methods=["POST"]),
     Route("/api/batch-move", endpoint=batch_move_endpoint, methods=["POST"]),
+    Route("/api/batch-copy", endpoint=batch_copy_endpoint, methods=["POST"]),
     Route("/api/batch-delete", endpoint=batch_delete_endpoint, methods=["POST"]),
     Route("/api/files", endpoint=list_files_endpoint, methods=["GET"]),
     Route("/api/images", endpoint=list_images_endpoint, methods=["GET"]),

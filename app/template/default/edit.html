@@ -275,7 +275,8 @@
                 closeBrackets, closeBracketsKeymap,
                 markdown, python, languages, indentUnit, indentOnInput, bracketMatching,
                 foldGutter, foldKeymap, syntaxHighlighting, defaultHighlightStyle,
-                oneDark, unifiedMergeView, getChunks, goToNextChunk } = CMEditor;
+                oneDark, unifiedMergeView, getChunks, goToNextChunk, goToPreviousChunk,
+                acceptChunk, rejectChunk, updateOriginalDoc } = CMEditor;
 
         // Theme compartment for dynamic light/dark switching
         const themeCompartment = new Compartment();
@@ -462,7 +463,11 @@
                             setTimeout(() => setDiff(false), 0);
                             return;
                         }
-                        if (update.docChanged) updateDiffButton(update.state);
+                        // Accepting a change moves it into the original, not the doc.
+                        if (update.docChanged || update.transactions.some((tr) =>
+                                tr.effects.some((e) => e.is(updateOriginalDoc)))) {
+                            updateDiffButton(update.state);
+                        }
                     }),
                 ],
             }),
@@ -499,6 +504,7 @@
             button.textContent = diffOn
                 ? "Hide changes (" + diffChunkCount(state) + ")"
                 : "Show changes";
+            button.dataset.command = diffOn ? "Hide changes" : "Show changes";
             button.setAttribute("aria-pressed", String(diffOn));
         }
 
@@ -524,6 +530,21 @@
         if (diffButton) diffButton.addEventListener("click", () => setDiff(!diffOn));
         updateDiffButton(cmView.state);
 
+        // The merge controls are one mousedown-driven pair per change, so the
+        // Mod-P palette (palette.js) gets cursor-relative commands instead.
+        function cursorInChange() {
+            const result = getChunks(cmView.state);
+            const head = cmView.state.selection.main.head;
+            return !!(result && result.chunks.some((c) => c.fromB <= head && c.endB >= head));
+        }
+        const hasChanges = () => diffChunkCount() > 0;
+        (window.PaletteCommands = window.PaletteCommands || []).push(
+            { label: "Next change", key: "F7", when: hasChanges, run: () => goToNextChunk(cmView) },
+            { label: "Previous change", when: hasChanges, run: () => goToPreviousChunk(cmView) },
+            { label: "Accept change at cursor", when: cursorInChange, run: () => acceptChunk(cmView) },
+            { label: "Reject change at cursor", when: cursorInChange, run: () => rejectChunk(cmView) },
+        );
+
         // React to OS theme changes
         darkQuery.addEventListener("change", () => {
             cmView.dispatch({
@@ -534,13 +555,16 @@
         // --- Banner: recovered drafts, other tabs, save conflicts --------------
         const banner = document.getElementById("edit_banner");
 
+        // actions are [label, onClick, command?]; command names the button in the
+        // Mod-P palette and defaults to the label.
         function showBanner(message, actions, tone) {
             const text = document.createElement("span");
             text.textContent = message;
-            banner.replaceChildren(text, ...actions.map(([label, onClick]) => {
+            banner.replaceChildren(text, ...actions.map(([label, onClick, command]) => {
                 const button = document.createElement("button");
                 button.type = "button";              // inside the form: never a submit
                 button.textContent = label;
+                button.dataset.command = command || label;
                 button.addEventListener("click", onClick);
                 return button;
             }));
@@ -553,11 +577,12 @@
             banner.replaceChildren();
         }
 
-        const dismiss = ["Dismiss", hideBanner];
+        const dismiss = ["Dismiss", hideBanner, "Dismiss notice"];
         // A reload re-reads the page from disk; say so when it costs this tab's edits.
         const reload = () => [
             cmView.state.doc.toString() !== initialDoc ? "Reload (drops this tab's changes)" : "Reload",
             () => window.location.reload(),
+            "Reload page",
         ];
 
         function onDraftEvent(kind) {
@@ -593,8 +618,8 @@
             const age = window.EditDraft.describeAge(Date.now() - draft.offered().at);
             showBanner("Unsaved changes from " + age + " were found for this page."
                        + (draft.decision === "offer-stale" ? " The page has changed since they were made." : ""),
-                       [["Restore", restoreDraft],
-                        ["Discard", () => { draft.discard(); hideBanner(); }]]);
+                       [["Restore", restoreDraft, "Restore unsaved draft"],
+                        ["Discard", () => { draft.discard(); hideBanner(); }, "Discard unsaved draft"]]);
         }
 
         if (staged) {
@@ -604,7 +629,7 @@
             showBanner("Reviewing " + staged.agent + "'s proposal"
                        + (staged.note ? ": " + staged.note : "")
                        + ". Drop or edit any change, then Accept.",
-                       [["Cancel", () => { window.location.href = "/agents"; }]]);
+                       [["Cancel", () => { window.location.href = "/agents"; }, "Cancel review"]]);
         }
 
         // --- Save ----------------------------------------------------------------
@@ -628,7 +653,7 @@
                     rebase(conflict, true);
                     showBanner("Showing differences from the version on disk now. "
                                + "Reject a change to take the disk version, then Save.", [dismiss]);
-                }],
+                }, "Show differences from disk"],
                 [staged ? "Accept anyway" : "Save anyway", () => {
                     rebase(conflict, false);
                     hideBanner();
@@ -732,24 +757,31 @@
         <input type="hidden" name="markdown" id="editor-hidden-input" value="">
         <input type="hidden" name="base_hash" value="{{base_hash}}">
         <br />
-        <input type="submit" value="{% if staged %}Accept{% else %}Save{% endif %}" />
+        {# data-command lists a control in the Mod-P palette's > commands
+           (palette.js); data-command-key shows its shortcut there. #}
+        <input type="submit" value="{% if staged %}Accept{% else %}Save{% endif %}"
+               data-command="{% if staged %}Accept proposal{% else %}Save page{% endif %}" data-command-key="Mod-s" />
         <input type="hidden" name="document_name" value="{{file_path}}">
-        <button type="button" name="preview_button" onclick="editPreview(this)" value="true">Preview</button>
+        <button type="button" name="preview_button" onclick="editPreview(this)" value="true"
+                data-command="Preview">Preview</button>
         <button type="button" name="diff_button" id="diff_button" aria-pressed="false"
+                data-command="Show changes" data-command-key="Mod-Shift-d"
                 title="Show what changed since you opened this page (Ctrl+Shift+D)">Show changes</button>
         {% if document_mode == "edit" and not staged %}
-        <button name="delete_button" value="true">Delete</button>
+        <button name="delete_button" value="true"
+                data-command="Delete page" data-command-confirm="Delete this page?">Delete</button>
         <button type="button" name="move_button" onclick="moveDocument(this)"
-                data-vault="{{vault}}" data-rel="{{move_source_rel}}">Move / Rename</button>
+                data-vault="{{vault}}" data-rel="{{move_source_rel}}"
+                data-command="Move / rename page">Move / Rename</button>
         {% endif %}
         <br />
         {% if history_enabled %}
-        <input type="checkbox" name="save_version" id="save_version" value="True" 
+        <input type="checkbox" name="save_version" id="save_version" value="True" data-command="Save history"
         {% if save_on_edit %} checked {% endif %} > <label for="save_version">Save history</label>
         {% endif %}
 
 
-        <div id="dropZone">
+        <div id="dropZone" data-command="Upload files">
             <div class="upload-icon">📁</div>
             <div class="dropzone-text">
                 <p><strong>Drag & drop files here</strong></p>

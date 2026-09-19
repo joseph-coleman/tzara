@@ -464,6 +464,18 @@ DOCUMENT_FILE_TYPES = [
     "canvas",
 ]
 
+
+def is_versioned_file(path: str) -> bool:
+    """Whether a vault file belongs in git history: a first-class DOCUMENT.
+
+    Derived from DOCUMENT_FILE_TYPES rather than restated, so a new document type
+    becomes versionable by editing one list. ATTACHMENT_FILE_TYPES is deliberately
+    NOT the source: it carries images, PDFs and spreadsheets, and the vault repo
+    exists to diff prose -- a committed binary bloats that history permanently and
+    irreversibly. Accepts any path form (absolute, vault-relative, bare name).
+    """
+    return os.path.splitext(path)[1].lstrip(".").lower() in DOCUMENT_FILE_TYPES
+
 # Extensions that may be served as VAULT ATTACHMENTS (user content dropped next to
 # a page, Obsidian-style) over /wiki/{vault}/... . Kept deliberately separate from
 # RESERVED_FILE_TYPES (which also gates theme/template assets like css/js): this is

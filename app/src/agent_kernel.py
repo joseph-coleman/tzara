@@ -67,8 +67,9 @@ class _AgentWiki:
     For composing analytics in Python (instead of chaining tools yourself),
     queryDocuments()/queryEdges()/queryDocumentTags() return whole-vault
     metadata tables as row lists (wrap in pandas.DataFrame(...) to filter/join),
-    and list_orphans/find_near_duplicates/find_missing_links/list_stale_stubs
-    return the same structured findings the analysis capabilities use.
+    and list_orphans/find_near_duplicates/find_missing_links/list_stale_stubs/
+    list_broken_links return the same structured findings the analysis
+    capabilities use.
 
     as_int(v, default)/as_float(v, default)/as_str(v, default) coerce malformed
     model args (bracket-wrapped scalars, one-element lists, ...). See the
@@ -145,6 +146,8 @@ class _AgentWiki:
     def list_stale_stubs(self, path_prefix="", max_chars=400, stale_days=180, limit=40):
         return self._query("list_stale_stubs", path_prefix=path_prefix,
                            max_chars=max_chars, stale_days=stale_days, limit=limit)
+    def list_broken_links(self, path_prefix="", limit=50):
+        return self._query("list_broken_links", path_prefix=path_prefix, limit=limit)
     def read(self, path):
         return self._post("/read", {"path": path})
     def write(self, path, content, note=""):

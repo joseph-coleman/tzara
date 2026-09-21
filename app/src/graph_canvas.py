@@ -42,6 +42,13 @@ logger = logging.getLogger("graph_canvas")
 # thread (asyncio.to_thread).
 _href_ctx = threading.local()
 
+# Collects the components that were too large for networkx's in-process layout
+# and had to be seeded as a grid instead (see layout_graph), so the page can
+# relax just those in the browser. Thread-local for the same reason _href_ctx is
+# -- build_canvas runs in a per-request worker thread -- which is also why the
+# route must read it via build_canvas_relaxed, inside that same thread.
+_layout_ctx = threading.local()
+
 # Page-node colors encode index/existence state (presets round-trip to the
 # .canvas schema; tzara's theme maps them to its hues):
 #   ghost     (doc_exists=FALSE)  -> a page that USED to exist and was deleted,
@@ -234,48 +241,115 @@ def fetch_graph(root_doc_id: str | None = None, depth: int = 1, include_isolated
 _EDGE_LEN = 240.0       # target spring edge length
 _PACK_MARGIN = 300.0    # gap between packed components (> node width so they never touch)
 _PACK_ROW_WIDTH = 3600.0  # wrap components to a new shelf row past this width
+_GRID_MIN_GAP = 40.0    # smallest gap between grid-seeded nodes (see _grid_seed)
 
 # Radial (local-view) tuning.
 _RING_GAP = 320.0       # base radius added per BFS hop from the focused page
 _RING_MIN_ARC = 340.0   # min arc length reserved per node so crowded rings expand
 
 
+# Penetration under this many px counts as resolved, so passes can stop instead of
+# chasing sub-pixel residue. Same value as tzara-canvas's SEPARATE_EPS.
+_SEPARATE_EPS = 0.5
+
+
 def _resolve_overlaps(pos, sizes, margin=48.0, iterations=120):
     """Push apart overlapping node rectangles in place (centers in `pos`).
 
     spring_layout treats nodes as dimensionless points, so finite-size cards
-    placed near each other visually collide. This separating-axis pass shifts
-    each overlapping pair halfway apart on the axis of *least* penetration --
-    minimal disturbance to the layout's shape while guaranteeing separation.
+    placed near each other visually collide. Each overlapping pair is shifted
+    halfway apart on the axis of least RELATIVE penetration -- the overlap as a
+    fraction of the pair's combined extent on that axis. Cards are far wider than
+    tall, so comparing raw overlaps almost always picks y and stretches the
+    layout into a column; normalizing keeps the shape spring_layout found.
+
+    A port of tzara-canvas's separateBoxes, which the browser's force layout
+    runs (graph.html), so the server and the browser separate identically --
+    keep the two in step. Each pass sorts by x and stops scanning a node's
+    partners once they are too far right to reach it (sweep-and-prune), which is
+    ~O(n log n) per pass on a spread-out layout instead of O(n^2). A move within
+    a pass can stale that order and skip a pair; the next pass re-sorts and
+    catches it, and a pass with no moves never staled its order, so stopping on
+    one is exact.
     """
-    ids = list(pos.keys())
+    ids = list(pos)
     n = len(ids)
+    if n < 2:
+        return pos
+    cx = [pos[k][0] for k in ids]
+    cy = [pos[k][1] for k in ids]
+    dims = [sizes.get(k, (_NODE_W_MIN, _NODE_H)) for k in ids]
+    w = [d[0] for d in dims]
+    h = [d[1] for d in dims]
+    max_w = max(w)
+    order = list(range(n))
     for _ in range(iterations):
         moved = False
-        for i in range(n):
-            a = ids[i]
-            ax, ay = pos[a]
-            aw, ah = sizes.get(a, (_NODE_W_MIN, _NODE_H))
-            for j in range(i + 1, n):
-                b = ids[j]
-                bx, by = pos[b]
-                bw, bh = sizes.get(b, (_NODE_W_MIN, _NODE_H))
-                dx, dy = bx - ax, by - ay
-                ox = (aw + bw) / 2.0 + margin - abs(dx)
-                oy = (ah + bh) / 2.0 + margin - abs(dy)
-                if ox > 0.0 and oy > 0.0:
-                    if ox <= oy:
-                        sh = ox / 2.0 if dx >= 0 else -ox / 2.0
-                        ax, bx = ax - sh, bx + sh
-                    else:
-                        sh = oy / 2.0 if dy >= 0 else -oy / 2.0
-                        ay, by = ay - sh, by + sh
-                    pos[a] = (ax, ay)
-                    pos[b] = (bx, by)
-                    moved = True
+        order.sort(key=cx.__getitem__)
+        for oi in range(n):
+            a = order[oi]
+            reach = (w[a] + max_w) / 2.0 + margin
+            for oj in range(oi + 1, n):
+                b = order[oj]
+                dx = cx[b] - cx[a]
+                if dx > reach:
+                    break
+                ox = (w[a] + w[b]) / 2.0 + margin - abs(dx)
+                if ox <= _SEPARATE_EPS:
+                    continue
+                dy = cy[b] - cy[a]
+                oy = (h[a] + h[b]) / 2.0 + margin - abs(dy)
+                if oy <= _SEPARATE_EPS:
+                    continue
+                if ox / (w[a] + w[b] + 2 * margin) <= oy / (h[a] + h[b] + 2 * margin):
+                    sh = ox / 2.0 if dx >= 0 else -ox / 2.0
+                    cx[a] -= sh
+                    cx[b] += sh
+                else:
+                    sh = oy / 2.0 if dy >= 0 else -oy / 2.0
+                    cy[a] -= sh
+                    cy[b] += sh
+                moved = True
         if not moved:
             break
+    for i, k in enumerate(ids):
+        pos[k] = (cx[i], cy[i])
     return pos
+
+
+def _grid_seeded() -> list[list[str]]:
+    """This thread's list of grid-seeded components (doc_ids), created on first
+    use. Reset per build by build_canvas."""
+    got = getattr(_layout_ctx, "grid_components", None)
+    if got is None:
+        got = _layout_ctx.grid_components = []
+    return got
+
+
+def _grid_seed(comp, sizes) -> dict[str, tuple[float, float]]:
+    """Plain grid of one component's nodes -- the fallback when spring_layout
+    can't run, and the starting state the browser's spring pass relaxes.
+
+    Cells are sized from the widest/tallest member plus _EDGE_LEN, so nodes never
+    overlap (nothing for _resolve_overlaps to do) and the initial spacing already
+    sits near the simulation's target edge length. Sorted order keeps a rebuild
+    of the same graph stable.
+    """
+    ordered = sorted(comp)
+    m = len(ordered)
+    cols = max(1, math.ceil(math.sqrt(m)))
+    # Span the same footprint the spring path would have targeted for m nodes.
+    # The shelf packer reserves a row from this box, so sizing it to the relaxed
+    # result -- not to the grid's natural spacing -- is what keeps the browser
+    # pass from leaving a hole (grid much larger) or overflowing into the next
+    # component (grid much smaller).
+    cell = (_EDGE_LEN + _NODE_W_MIN) * math.sqrt(m) / cols
+    cell_w = max(max(sizes.get(n, (_NODE_W_MIN, _NODE_H))[0] for n in ordered)
+                 + _GRID_MIN_GAP, cell)
+    cell_h = max(max(sizes.get(n, (_NODE_W_MIN, _NODE_H))[1] for n in ordered)
+                 + _GRID_MIN_GAP, cell)
+    return {n: ((i % cols) * cell_w, (i // cols) * cell_h)
+            for i, n in enumerate(ordered)}
 
 
 def layout_graph(nodes, edges) -> dict[str, tuple[float, float]]:
@@ -312,12 +386,28 @@ def layout_graph(nodes, edges) -> dict[str, tuple[float, float]]:
             local = {a: (0.0, 0.0), b: (_EDGE_LEN + _NODE_W_MAX, 0.0)}
         else:
             sub = G.subgraph(comp)
-            raw = nx.spring_layout(sub, seed=42, k=1.4 / math.sqrt(m), iterations=150)
-            # Scale normalized [-1,1] out to roughly edge-length + node-width so
-            # there's room before overlap resolution nudges the rest apart.
-            s = (_EDGE_LEN + _NODE_W_MIN) * math.sqrt(m) / 2.0
-            local = {node: (float(x) * s, float(y) * s) for node, (x, y) in raw.items()}
-            _resolve_overlaps(local, sizes)
+            try:
+                raw = nx.spring_layout(sub, seed=42, k=1.4 / math.sqrt(m),
+                                       iterations=150)
+            except ImportError:
+                # networkx sends any component of >= 500 nodes to a SciPy sparse
+                # solver (the size test alone decides it -- `method` cannot opt
+                # out), and SciPy is deliberately not a Tzara dependency for one
+                # view. Seed a grid and let the browser's spring simulation relax
+                # it. Without this the route's except-handler turns the raised
+                # ImportError into an EMPTY canvas, so the whole graph vanishes
+                # with no visible error.
+                logger.info("layout_graph: component of %d nodes needs SciPy; "
+                            "seeding a grid for the browser to relax", m)
+                _grid_seeded().append(sorted(comp))
+                local = _grid_seed(comp, sizes)
+            else:
+                # Scale normalized [-1,1] out to roughly edge-length + node-width
+                # so there's room before overlap resolution nudges the rest apart.
+                s = (_EDGE_LEN + _NODE_W_MIN) * math.sqrt(m) / 2.0
+                local = {node: (float(x) * s, float(y) * s)
+                         for node, (x, y) in raw.items()}
+                _resolve_overlaps(local, sizes)
 
         # Size-aware bbox: include each node's half-extent so shelf-packed
         # components never touch and intra-component cards stay clear.
@@ -885,6 +975,7 @@ def build_canvas(root_doc_id: str | None = None, depth: int = 1,
     """
     # Make the vault available to _doc_href for this build (thread-local).
     _href_ctx.vault = vault_id or DEFAULT_VAULT
+    _grid_seeded().clear()
 
     if root_doc_id is None:
         # Show orphans too -- they shelf-pack as their own singletons after the
@@ -914,3 +1005,23 @@ def build_canvas(root_doc_id: str | None = None, depth: int = 1,
             n["_is_root"] = True
     positions = layout_radial(nodes, edges, root_doc_id)
     return to_canvas_json(nodes, edges, positions)
+
+
+def build_canvas_relaxed(root_doc_id: str | None = None, depth: int = 1,
+                         include_isolated: bool = False, tags: bool = False,
+                         vault_id: str | None = None) -> tuple[dict, list[list[str]]]:
+    """build_canvas plus the CANVAS NODE IDS of any grid-seeded component.
+
+    The two belong together: the component list is thread-local, so a route that
+    awaited build_canvas in a worker thread and then read it on the event loop
+    would always come back empty. Calling both here keeps them in one thread.
+
+    A non-empty list means layout_graph could not lay those components out and
+    seeded a grid; graph.html relaxes each one with the canvas's own spring
+    simulation. It is per-component rather than a single flag so the page relaxes
+    ONLY the oversized components, in place -- running the simulation over the
+    whole canvas would drag the small components out of the shelf packing they
+    were correctly laid out into.
+    """
+    canvas = build_canvas(root_doc_id, depth, include_isolated, tags, vault_id)
+    return canvas, [[_node_id(d) for d in comp] for comp in _grid_seeded()]

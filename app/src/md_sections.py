@@ -16,7 +16,9 @@ this module exists to prevent.
 Everything here is PURE: str in, str/list out. No filesystem, no database, no
 config import, no vault concept. That is deliberate - it is what lets chat.py,
 agent_capabilities.py, edit_assist.py and markdown_extensions.py all depend on
-it without dragging each other's machinery along.
+it without dragging each other's machinery along. The raw grammar it matches
+against (headings, fences, math delimiters) comes from md_syntax, which sits one
+level below this module and is equally pure.
 
 Two addressing schemes, matching the two the wiki already exposes to users:
 - SECTIONS - `parse_sections` returns character offsets, `lookup_section`
@@ -32,12 +34,16 @@ for document structure.
 
 import re
 
-# The one fence detector. Shared with chunker/agent_registry/markdown_extensions
-# rather than re-derived here - see the module docstring on why a local copy is
-# exactly the failure mode this module prevents.
-from src.chunker import _fence_info
+# Grammar comes from md_syntax rather than being re-derived here - see the module
+# docstring on why a local copy is exactly the failure mode this module prevents.
+from src.md_syntax import (
+    MATH_BLOCK_DOLLAR_LINE_RE,
+    MD_HEADER_LINE_RE,
+    MD_HEADER_RE,
+    fence_info,
+)
 
-_MD_HEADER_RE = re.compile(r'^(#{1,6})\s+(.+)')
+_MD_HEADER_RE = re.compile(MD_HEADER_RE)
 
 # Aliases for the level-0 "content before the first heading" pseudo-section.
 _TOP_ALIASES = {"(content before first heading)", "(top)"}
@@ -69,7 +75,7 @@ def fence_line_indices(lines: list[str]) -> set[int]:
     n = len(lines)
     i = 0
     while i < n:
-        fc, fchar = _fence_info(lines[i])
+        fc, fchar = fence_info(lines[i])
         if fc < 3:
             i += 1
             continue
@@ -80,7 +86,7 @@ def fence_line_indices(lines: list[str]) -> set[int]:
             continue
         close = None
         for j in range(i + 1, n):
-            fc2, fchar2 = _fence_info(lines[j])
+            fc2, fchar2 = fence_info(lines[j])
             if fc2 >= 3 and fchar2 == fchar and fc2 == fc:
                 close = j
                 break
@@ -125,7 +131,7 @@ def comment_line_indices(lines: list[str]) -> set[int]:
     reached above for an unterminated fence.
 
     The INLINE form (`text %%note%% text`) is not handled here - it never spans
-    lines, so the renderer's inline pattern and agent_registry.strip_comments
+    lines, so the renderer's inline pattern and md_syntax.strip_comments
     both cover it with a plain non-greedy regex.
     """
     fenced = fence_line_indices(lines)
@@ -227,7 +233,7 @@ def parse_sections(document: str) -> list[dict]:
 
         # LaTeX block tracking
         stripped = line.rstrip()
-        if re.match(r'^\$\$\s*$', line):
+        if re.match(MATH_BLOCK_DOLLAR_LINE_RE, line):
             in_latex_block = not in_latex_block
             continue
         if stripped == '\\[' and not in_latex_block:
@@ -243,8 +249,8 @@ def parse_sections(document: str) -> list[dict]:
         # Header detection
         m = _MD_HEADER_RE.match(line)
         if m:
-            level = len(m.group(1))
-            heading_text = m.group(2).strip()
+            level = len(m.group("hashes"))
+            heading_text = m.group("text").strip()
             # Strip trailing # marks
             trailing = re.search(r'\s+#+\s*$', heading_text)
             if trailing:
@@ -520,7 +526,7 @@ def extract_block_ref(body: str, block_id: str) -> str | None:
     the marker is absent.
     """
     marker = re.compile(r"\s*\^" + re.escape(block_id) + r"\s*$")
-    heading_re = re.compile(r"^#{1,6}\s")
+    heading_re = re.compile(MD_HEADER_LINE_RE)
     lines = body.split("\n")
     for n, line in iter_unfenced_lines(body):
         if marker.search(line):

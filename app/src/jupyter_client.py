@@ -70,7 +70,8 @@ class _WikiClient:
     pandas.DataFrame(...). Available: search, related, tagged, backlinks,
     frontmatter; whole-table reads queryDocuments/queryEdges/queryDocumentTags;
     and the analysis views list_orphans/find_near_duplicates/find_missing_links/
-    list_stale_stubs. (Read-only: writing goes through the editor, not here.)"""
+    list_stale_stubs/list_broken_links. (Read-only: writing goes through the
+    editor, not here.)"""
     def __init__(self, base, vault):
         self._base, self._vault = base, vault
     def _call(self, op, **args):
@@ -141,6 +142,8 @@ class _WikiClient:
     def list_stale_stubs(self, path_prefix="", max_chars=400, stale_days=180, limit=40):
         return self._call("list_stale_stubs", path_prefix=path_prefix,
                          max_chars=max_chars, stale_days=stale_days, limit=limit)
+    def list_broken_links(self, path_prefix="", limit=50):
+        return self._call("list_broken_links", path_prefix=path_prefix, limit=limit)
 
 wiki = _WikiClient(_WIKI_BASE, _WIKI_VAULT)
 del _WikiClient, _WIKI_BASE, _WIKI_VAULT

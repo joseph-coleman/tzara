@@ -17,20 +17,19 @@ prose centered on the query. Two properties are load-bearing:
 
 Callers still escape at the output boundary; this returns text, not markup.
 
-Every rule that already has an owner is IMPORTED, not re-derived: fences from
-md_sections, link/heading/list syntax from chunker's constants block, comments
-from agent_registry, frontmatter from WikiDoc. What is left below is display-only
-flattening (rules, blockquotes, emphasis, tags) that nothing else needs.
+Every rule that already has an owner is IMPORTED, not re-derived: link/heading/
+list syntax, the fence detector and the comment stripper from md_syntax, fenced
+line indices from md_sections, frontmatter from WikiDoc. What is left below is
+display-only flattening (rules, blockquotes, emphasis, tags) that nothing else
+needs.
 """
 
 import re
 
-from src.agent_registry import strip_comments
-# _fence_info is private but imported rather than re-derived, the same way
-# md_sections takes it - a local fence regex is the drift this avoids.
-from src.chunker import (EMBED_RE, MD_HEADER, MD_LINK_LABEL_RE,
-                         MD_LIST_MARKER_RE, WIKILINK_RE, _fence_info)
 from src.md_sections import fence_line_indices
+from src.md_syntax import (EMBED_RE, MD_HEADER_RE, MD_LINK_LABEL_RE,
+                           MD_LIST_MARKER_RE, WIKILINK_RE, fence_info,
+                           strip_comments)
 from src.wikidoc import WikiDoc
 
 DEFAULT_SNIPPET_CHARS = 200
@@ -41,7 +40,7 @@ _SNAP_CHARS = 20
 _HR_LINE = re.compile(r"^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$")
 # Indent, then any run of blockquote/list markers - `> - item` is one prefix.
 _LINE_PREFIX = re.compile(rf"^[ \t]*(?:>[ \t]?|{MD_LIST_MARKER_RE})+")
-_HEADER = re.compile(MD_HEADER)
+_HEADER = re.compile(MD_HEADER_RE)
 _EMBED = re.compile(EMBED_RE)
 _WIKILINK = re.compile(WIKILINK_RE)
 _MD_LINK = re.compile(MD_LINK_LABEL_RE)
@@ -62,12 +61,12 @@ def _flatten_lines(body: str, keep_code: bool = False) -> str:
     fenced = fence_line_indices(lines)
     kept = []
     for n, line in enumerate(lines):
-        if n in fenced and (not keep_code or _fence_info(line)[0] >= 3):
+        if n in fenced and (not keep_code or fence_info(line)[0] >= 3):
             continue
         if _HR_LINE.match(line):
             continue
         header = _HEADER.match(line)
-        kept.append(header.group(1) if header else _LINE_PREFIX.sub("", line))
+        kept.append(header.group("text") if header else _LINE_PREFIX.sub("", line))
     return "\n".join(kept)
 
 

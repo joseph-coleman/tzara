@@ -245,6 +245,11 @@
         { action: "toggleMoveMode" },
       ],
     },
+    { group: "View",
+      items: [
+        { keys: ["Right-drag"], description: "Pan the canvas. Works anywhere - over nodes, groups and edges as well as empty space." },
+      ],
+    },
     { group: "Selection",
       items: [
         { action: "selectFocused",          description: "Toggle the focused node in or out of the selection (keyboard)." },
@@ -324,6 +329,28 @@
                no mousemove "fixup" needed. */
             border: 3px solid;
             border-radius: 6px;
+          }
+
+          /* Layout the canvas owns. Node geometry is data (x/y/width/height)
+             that hit-testing and edge anchors read directly, so the visible
+             boxes must match it under any host CSS reset. !important here
+             beats inline writes (node.style, defaultNodeStyle) and host
+             !important rules of lower specificity (*, div, .x div). Only
+             these few properties are pinned - everything else, including
+             node content, stays open to host CSS and theming. */
+          & .tc-layer {
+            margin: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
+            box-sizing: border-box !important;
+            /* Common resets cap media, e.g. canvas { max-width: 100% }. */
+            max-width: none !important;
+            max-height: none !important;
+          }
+          & .canvas-node,
+          & .canvas-node-scroll {
+            margin: 0 !important;
+            box-sizing: border-box !important;
           }
 
           & .grouplabel,
@@ -762,7 +789,7 @@
       /* Accessibility primitives .
          .tc-sr-only hides content visually while leaving it in the
          accessibility tree. Used for the canvas heading landmark, the
-         connections-summary spans , and the live region . */
+         connections-summary spans, and the live region. */
       .tzara-canvas-root .tc-sr-only {
         position: absolute !important;
         width: 1px !important;
@@ -783,7 +810,7 @@
         outline-offset: 2px;
       }
 
-      /* Keyboard-shortcut help dialog . Opens on the help action's
+      /* Keyboard-shortcut help dialog. Opens on the help action's
          current binding (default '?'). Renders from HELP_TOPICS plus the
          live shortcut registry so what the dialog shows always matches
          what the canvas actually responds to. Sits above everything else
@@ -1065,6 +1092,229 @@
           return { x: cx + dx * rect.width / 2, y: cy + dy * rect.height / 2, dx, dy };
       }
 
+    // ====================================================================
+    // Orthogonal ("circuit board") edge routing
+    // ====================================================================
+    // Every renderer that draws an orthogonal edge routes through
+    // computeOrthoRoute() so the stroked path, the hit-test polyline, the
+    // SVG export and the connect-drag preview cannot drift apart.
+    //
+    // All lengths here are WORLD units, unlike the screen-px-scaled `dash`
+    // and `arrowSize` style keys. The route's shape must not change with
+    // zoom: it doubles as the hit region, and a region that reshapes as the
+    // user scrolls the wheel would slide out from under the pointer.
+
+    const ORTHO_EPS     = 0.5;   // below this, two coordinates are "the same"
+    const ORTHO_STUB    = 24;    // default perpendicular run off the border
+    const ORTHO_CHAMFER = 10;    // default 45-degree corner cut
+    const ORTHO_DETOUR  = 24;    // clearance when routing around a node
+
+    // Which side of `a` faces `b`, as an outward unit normal. Same
+    // axis-dominance test as rectBorderPoint(), so a side derived here
+    // agrees with where an unsided edge would have met the border.
+    function pickSideVec(a, b) {
+      const acx = a.x + a.width / 2, acy = a.y + a.height / 2;
+      const bcx = b.x + b.width / 2, bcy = b.y + b.height / 2;
+      const dx = bcx - acx, dy = bcy - acy;
+      const hw = Math.max(1, a.width  / 2);
+      const hh = Math.max(1, a.height / 2);
+      if (Math.abs(dx) / hw > Math.abs(dy) / hh) return { dx: dx > 0 ? 1 : -1, dy: 0 };
+      return { dx: 0, dy: dy > 0 ? 1 : -1 };
+    }
+
+    // Guarantee an anchor has an outward normal. fromSide/toSide are
+    // optional in the .canvas format and _normalizeData does not fill them
+    // in, so an unsided edge arrives as the node CENTRE with a zero normal.
+    // A bezier tolerates that (it just draws centre-to-centre); an
+    // orthogonal route has no direction to leave in, so derive the facing
+    // side and snap the anchor to that side's midpoint.
+    function resolveOrthoAnchor(anchor, ownRect, otherRect) {
+      if (anchor.dx || anchor.dy) return anchor;
+      const v = pickSideVec(ownRect, otherRect);
+      return {
+        x: ownRect.x + ownRect.width  / 2 + v.dx * ownRect.width  / 2,
+        y: ownRect.y + ownRect.height / 2 + v.dy * ownRect.height / 2,
+        dx: v.dx, dy: v.dy,
+      };
+    }
+
+    // Solvers below are written for one orientation only and the callers
+    // transpose into it, so a mirrored-axis bug can only exist once.
+    function _transposeAnchor(p) {
+      return { x: p.y, y: p.x, dx: p.dy || 0, dy: p.dx || 0 };
+    }
+    function _transposeXY(p) { return { x: p.y, y: p.x }; }
+    function _transposeRect(r) {
+      return r ? { x: r.y, y: r.x, width: r.height, height: r.width } : r;
+    }
+
+    // Pick a free lane outside both node rects for a C-shaped detour, on
+    // whichever side is closer to the run being detoured around.
+    function _detourY(a, b, rectA, rectB) {
+      const mid = (a + b) / 2;
+      const lo = Math.min(rectA ? rectA.y : a, rectB ? rectB.y : b) - ORTHO_DETOUR;
+      const hi = Math.max(rectA ? rectA.y + rectA.height : a,
+                          rectB ? rectB.y + rectB.height : b) + ORTHO_DETOUR;
+      return (mid - lo) <= (hi - mid) ? lo : hi;
+    }
+
+    // Both anchors leave along the x axis.
+    function _routeParallelH(start, end, stub, rectA, rectB) {
+      const s1 = { x: start.x + start.dx * stub, y: start.y };
+      const e1 = { x: end.x   + end.dx   * stub, y: end.y   };
+
+      if (start.dx === end.dx) {
+        // U - both traces leave the same way, so they meet at a column
+        // beyond the farther stub and double back in.
+        const xOut = start.dx > 0 ? Math.max(s1.x, e1.x) : Math.min(s1.x, e1.x);
+        return [start, s1, { x: xOut, y: s1.y }, { x: xOut, y: e1.y }, e1, end];
+      }
+      if ((e1.x - s1.x) * start.dx > ORTHO_EPS) {
+        // Z - facing, with room between them: split the gap down the middle.
+        // The test above guarantees midX lands beyond s1, so the trace
+        // always clears its stub before turning.
+        const midX = (s1.x + e1.x) / 2;
+        return [start, s1, { x: midX, y: s1.y }, { x: midX, y: e1.y }, e1, end];
+      }
+      // C - facing but overlapping or back-to-back: there is no column
+      // between them, so detour along the nearer free side.
+      const yOut = _detourY(s1.y, e1.y, rectA, rectB);
+      return [start, s1, { x: s1.x, y: yOut }, { x: e1.x, y: yOut }, e1, end];
+    }
+
+    // `start` leaves along x, `end` leaves along y.
+    function _routePerpH(start, end, stub) {
+      const s1 = { x: start.x + start.dx * stub, y: start.y };
+      const e1 = { x: end.x, y: end.y + end.dy * stub };
+      const corner = { x: e1.x, y: s1.y };
+      // The corner has to sit in the direction each stub is already
+      // heading, or the trace doubles back over its own pad.
+      const okX = (corner.x - s1.x) * start.dx >= -ORTHO_EPS;
+      const okY = (corner.y - e1.y) * end.dy   >= -ORTHO_EPS;
+      // Simplification collapses this to a single clean bend, since s1
+      // shares a row with the corner and e1 shares a column with `end`.
+      if (okX && okY) return [start, s1, corner, e1, end];
+      // Mirrored elbow. Its segments alternate axes all the way through, so
+      // it can never double back - it just costs two extra bends.
+      return [start, s1, { x: s1.x, y: e1.y }, e1, end];
+    }
+
+    // Drop duplicate points, then interior points that lie on a straight
+    // run between their neighbours - this is what lets the solvers emit a
+    // stub unconditionally and have it disappear when it is redundant.
+    // Collinearity is tested per-axis rather than by cross product: the
+    // pre-chamfer route is strictly axis-aligned, so the axis test is exact
+    // and (unlike a cross product against a fixed epsilon) does not get
+    // looser as the segments get longer.
+    function simplifyPolyline(pts) {
+      const out = [];
+      for (const p of pts) {
+        const last = out[out.length - 1];
+        if (last && Math.abs(last.x - p.x) < ORTHO_EPS
+                 && Math.abs(last.y - p.y) < ORTHO_EPS) continue;
+        out.push({ x: p.x, y: p.y });
+      }
+      for (let i = out.length - 2; i >= 1; i--) {
+        const p = out[i - 1], c = out[i], n = out[i + 1];
+        const sameX = Math.abs(p.x - c.x) < ORTHO_EPS && Math.abs(c.x - n.x) < ORTHO_EPS;
+        const sameY = Math.abs(p.y - c.y) < ORTHO_EPS && Math.abs(c.y - n.y) < ORTHO_EPS;
+        if (!(sameX || sameY)) continue;
+        // Collinear is not enough: if p and n sit on the SAME side of c the
+        // path reverses here, and c is the turnaround of a U rather than a
+        // redundant waypoint. Dropping it would collapse the detour that
+        // put it there and leave a zero-length path (two fully overlapping
+        // nodes connected on the same side hit exactly this).
+        const forward = sameX ? (c.y - p.y) * (n.y - c.y)
+                              : (c.x - p.x) * (n.x - c.x);
+        if (forward > 0) out.splice(i, 1);
+      }
+      return out;
+    }
+
+    // Replace each interior vertex with a 45-degree cut across the corner.
+    // Chamfering rather than arc-rounding keeps the result a plain
+    // polyline, so hit testing, bounds and arrowheads need no special case.
+    function chamferPolyline(pts, cut) {
+      if (!(cut > 0) || pts.length < 3) return pts;
+      const out = [];
+      // Two chamfers sharing a short leg can consume all of it and meet in
+      // the middle (each is clamped to half, and half + half is the whole
+      // leg). That is the right picture - the jog becomes one continuous
+      // 45-degree run - but the coincident points would be a zero-length
+      // segment, so collapse them here.
+      const push = (p) => {
+        const last = out[out.length - 1];
+        if (last && Math.abs(last.x - p.x) < ORTHO_EPS
+                 && Math.abs(last.y - p.y) < ORTHO_EPS) return;
+        out.push(p);
+      };
+      push(pts[0]);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const p = pts[i - 1], c = pts[i], n = pts[i + 1];
+        const d1x = p.x - c.x, d1y = p.y - c.y;
+        const d2x = n.x - c.x, d2y = n.y - c.y;
+        const l1 = Math.sqrt(d1x * d1x + d1y * d1y);
+        const l2 = Math.sqrt(d2x * d2x + d2y * d2y);
+        if (l1 < ORTHO_EPS || l2 < ORTHO_EPS) { push(c); continue; }
+        // A 180-degree reversal (both legs leaving c the same way, as at
+        // the turnaround of a collinear out-and-back U) has no corner to
+        // cut: chamfering it would place both new points on top of each
+        // other and emit a zero-length segment.
+        if ((d1x * d2x + d1y * d2y) / (l1 * l2) > 0.999) { push(c); continue; }
+        // Clamp to half of each leg. Unclamped, a cut longer than a short
+        // segment overshoots the vertex at the far end and folds the path
+        // back over itself.
+        const k = Math.min(cut, l1 / 2, l2 / 2);
+        push({ x: c.x + d1x / l1 * k, y: c.y + d1y / l1 * k });
+        push({ x: c.x + d2x / l2 * k, y: c.y + d2y / l2 * k });
+      }
+      push(pts[pts.length - 1]);
+      return out;
+    }
+
+    // Route an axis-aligned path between two anchors. Both anchors must
+    // already carry a non-zero outward normal (see resolveOrthoAnchor).
+    // Returns a polyline whose first and last points are the anchors.
+    function computeOrthoRoute(start, end, opts) {
+      const o = opts || {};
+      const stub    = Math.max(0, o.stub    != null ? o.stub    : ORTHO_STUB);
+      const chamfer = Math.max(0, o.chamfer != null ? o.chamfer : ORTHO_CHAMFER);
+      const startH = start.dx !== 0;
+      const endH   = end.dx   !== 0;
+
+      let pts, flipped = false;
+      if (startH && endH) {
+        pts = _routeParallelH(start, end, stub, o.fromRect, o.toRect);
+      } else if (!startH && !endH) {
+        flipped = true;
+        pts = _routeParallelH(_transposeAnchor(start), _transposeAnchor(end), stub,
+                              _transposeRect(o.fromRect), _transposeRect(o.toRect));
+      } else if (startH) {
+        pts = _routePerpH(start, end, stub);
+      } else {
+        flipped = true;
+        pts = _routePerpH(_transposeAnchor(start), _transposeAnchor(end), stub);
+      }
+      if (flipped) pts = pts.map(_transposeXY);
+      return chamferPolyline(simplifyPolyline(pts), chamfer);
+    }
+
+    // Labels straddling a corner read badly, so an orthogonal edge centres
+    // its label on its longest straight run instead of its midpoint.
+    function longestSegmentMidpoint(pts) {
+      let best = -1, bx = pts[0].x, by = pts[0].y;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const dx = pts[i + 1].x - pts[i].x, dy = pts[i + 1].y - pts[i].y;
+        const len = dx * dx + dy * dy;
+        if (len > best) {
+          best = len;
+          bx = pts[i].x + dx / 2;
+          by = pts[i].y + dy / 2;
+        }
+      }
+      return { x: bx, y: by };
+    }
+
     function drawBezierEdge(ctx, fromRect, fromSide, toRect, toSide, strokeColor) {
           const fromC = { x: fromRect.x + fromRect.width / 2, y: fromRect.y + fromRect.height / 2 };
           const toC   = { x: toRect.x   + toRect.width   / 2, y: toRect.y   + toRect.height   / 2 };
@@ -1161,7 +1411,11 @@
       // through, so attacker-supplied javascript:/data: urls from .canvas data
       // can't execute when the link card's open affordance is clicked. Returns
       // the url for safe schemes, null otherwise (anchor renders as plain text).
-      function safeLinkHref(url) {
+      // The iframe embed path passes EMBED_SCHEMES (no mailto:) so both link
+      // renderings share one gate.
+      const LINK_SCHEMES  = ["http:", "https:", "mailto:"];
+      const EMBED_SCHEMES = ["http:", "https:"];
+      function safeLinkHref(url, schemes = LINK_SCHEMES) {
         const s = String(url || "").trim();
         if (!s) return null;
         let scheme;
@@ -1169,7 +1423,7 @@
         catch (_) { return null; }
         // Relative urls resolve against the dummy base → "http:"; absolute urls
         // keep their own scheme. Reject anything not in the allowlist.
-        return (scheme === "http:" || scheme === "https:" || scheme === "mailto:") ? s : null;
+        return schemes.includes(scheme) ? s : null;
       }
 
       function fileKind(path) {
@@ -1191,7 +1445,7 @@
         el.innerHTML = (typeof sanitize === "function") ? sanitize(html) : html;
       }
 
-      // Inbound data contract (Phase 4). Untrusted .canvas geometry is repaired,
+      // Inbound data contract. Untrusted .canvas geometry is repaired,
       // not trusted: a node with a default geometry when a field is non-finite,
       // and an upper bound so an absurd width/height can't blow the canvas extent.
       const DEFAULT_NODE_GEOMETRY = { x: 0, y: 0, width: 250, height: 60 };
@@ -1261,13 +1515,13 @@
             if (!NODE_KNOWN_KEYS.has(k)) this._extraData[k] = node[k];
           }
 
-          // Accessibility : host-authored a11y data is a top-level
+          // Accessibility: host-authored a11y data is a top-level
           // `accessibility` key in the .canvas JSON. It's listed in
           // NODE_KNOWN_KEYS so it bypasses the _extraData unknown-key
           // bag and lands directly on this runtime field. toData()
           // writes it back; setAccessibility() updates it. _a11y_hints
           // is resolved lazily on first apply so the host callback
-          // sees a fully-constructed node. 
+          // sees a fully-constructed node.
           this._a11y_authored = (node.accessibility && typeof node.accessibility === "object")
             ? { ...node.accessibility }
             : null;
@@ -1637,6 +1891,9 @@
         // Embed gate (2.2): decide what URL, if any, this link node may load
         // into a live <iframe>. resolveEmbed (host vetting/rewrite) wins; else
         // allowEmbeds embeds the raw url; default is null (render inert card).
+        // The final url - from allowEmbeds or a host resolveEmbed - must pass
+        // the same http(s) gate as the inert card's href, so a javascript:/
+        // data: url never reaches iframe.src even if the sandbox attrs change.
         _resolveEmbedUrl() {
           const c = this.parent;
           const url = this.url || "";
@@ -1644,13 +1901,13 @@
           if (typeof c.resolveEmbed === "function") {
             try {
               const r = c.resolveEmbed(url);
-              return (typeof r === "string" && r) ? r : null;
+              return (typeof r === "string" && r) ? safeLinkHref(r, EMBED_SCHEMES) : null;
             } catch (e) {
               console.error("resolveEmbed callback threw:", e);
               return null;
             }
           }
-          return c.allowEmbeds ? url : null;
+          return c.allowEmbeds ? safeLinkHref(url, EMBED_SCHEMES) : null;
         }
 
         _renderLink() {
@@ -3021,7 +3278,7 @@
           this.boundingBox = {};
           this.hitRadius = 10;
 
-          // Visual-only style overrides applied during drawSmartBezier.
+          // Visual-only style overrides applied during drawEdgePath.
           // See style() for accepted keys.
           this._styleOverrides = null;
 
@@ -3148,7 +3405,7 @@
         // Returns the cubic-bezier control points the edge renderer uses, in
         // world coordinates. Recomputed from current node positions on every
         // call, so callers driving per-frame animation (camera fly-along, etc.)
-        // see the live geometry. Shared with drawSmartBezier so the rendered
+        // see the live geometry. Shared with drawEdgePath so the rendered
         // curve and the queried curve cannot drift.
         _computeBezierPath() {
           const { from: fromNode, to: toNode } = this.endpoints();
@@ -3184,6 +3441,12 @@
 
         // Public bezier accessor: P0/P3 are the side-anchor endpoints,
         // P1/P2 are the two control points.
+        //
+        // Route-independent on purpose. Under route:'orthogonal' this still
+        // returns the curve that WOULD have been drawn, because its only
+        // consumer is camera.flyAlongEdge - and flying a camera through
+        // hard corners is jerky, so the curve is the better flight path.
+        // For the geometry actually drawn, use getPathPoints().
         getBezierPath() {
           const { start, end, ctrl1, ctrl2 } = this._computeBezierPath();
           return {
@@ -3194,10 +3457,103 @@
           };
         }
 
+        // The world-space polyline actually stroked and hit-tested. For a
+        // bezier edge these are curve samples; for an orthogonal edge they
+        // are the route's own vertices (chamfers included).
+        getPathPoints() {
+          return this._computePathPoints().pts.map(p => ({ x: p.x, y: p.y }));
+        }
+
+        // True when this edge is routed orthogonally rather than as a bezier.
+        _isOrtho() {
+          const O = this._styleOverrides;
+          return !!(O && O.route === 'orthogonal');
+        }
+
+        // The polyline that is actually stroked and hit-tested, plus the
+        // `kind` the renderer needs to stroke it correctly:
+        //
+        //   'bezier' - pts are only SAMPLES of the curve (the same
+        //              segmentLocations samples the hit test has always
+        //              used). The renderer still strokes one bezierCurveTo,
+        //              so the drawn line stays smooth.
+        //   'ortho'  - pts are the path. The renderer strokes them literally.
+        _computePathPoints() {
+          const { from: fromNode, to: toNode } = this.endpoints();
+
+          if (this._isOrtho() && fromNode && toNode) {
+            const O = this._styleOverrides;
+            const start = resolveOrthoAnchor(this.rectEdgePoint(fromNode, "from"), fromNode, toNode);
+            const end   = resolveOrthoAnchor(this.rectEdgePoint(toNode,   "to"),   toNode,   fromNode);
+            const pts = computeOrthoRoute(start, end, {
+              stub:     O.stub,
+              chamfer:  O.chamfer,
+              fromRect: fromNode,
+              toRect:   toNode,
+            });
+            return { kind: 'ortho', pts, start, end };
+          }
+
+          const { start, end, ctrl1, ctrl2 } = this._computeBezierPath();
+          const t  = this.segmentLocations;
+          const xs = this._bez(t, start.x, ctrl1.x, ctrl2.x, end.x);
+          const ys = this._bez(t, start.y, ctrl1.y, ctrl2.y, end.y);
+          const pts = [];
+          for (let i = 0; i < xs.length; i++) pts.push({ x: xs[i], y: ys[i] });
+          return { kind: 'bezier', pts, start, end, ctrl1, ctrl2 };
+        }
+
+        // Arc-length parameterisation of a routed polyline: t is a fraction
+        // of total length, not of segment index, so a marker driven along
+        // an orthogonal edge moves at a constant speed through the corners.
+        _polylineAt(t) {
+          const pts = this._computePathPoints().pts;
+          const fallback = {
+            point:   { x: pts[0].x, y: pts[0].y },
+            tangent: { x: 0, y: 0 },
+          };
+          if (pts.length < 2) return fallback;
+
+          const segs = [];
+          let total = 0;
+          for (let i = 0; i < pts.length - 1; i++) {
+            const len = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+            segs.push(len);
+            total += len;
+          }
+          if (total <= 0) return fallback;
+
+          let want = Math.max(0, Math.min(1, t)) * total;
+          for (let i = 0; i < segs.length; i++) {
+            // The last-segment check also absorbs float drift that would
+            // otherwise walk `want` off the end of the array.
+            if (want <= segs[i] || i === segs.length - 1) {
+              const f  = segs[i] > 0 ? want / segs[i] : 0;
+              const dx = pts[i + 1].x - pts[i].x;
+              const dy = pts[i + 1].y - pts[i].y;
+              return {
+                point: { x: pts[i].x + dx * f, y: pts[i].y + dy * f },
+                // Scaled by total/segment length so the magnitude is
+                // comparable to the bezier form's dP/dt, which is likewise
+                // "world units per unit of t".
+                tangent: segs[i] > 0
+                  ? { x: dx / segs[i] * total, y: dy / segs[i] * total }
+                  : { x: 0, y: 0 },
+              };
+            }
+            want -= segs[i];
+          }
+          return fallback;
+        }
+
         // Sample the curve at parameter t ∈ [0, 1]. Scalar inline form so
         // per-frame callers don't allocate an array (vs. _bez which takes a
-        // t-array).
+        // t-array). Orthogonal edges walk their polyline by arc length;
+        // bezier edges keep the exact cubic evaluation rather than
+        // interpolating the 11 stored samples, which would quietly lose
+        // precision for existing callers.
         pointAt(t) {
+          if (this._isOrtho()) return this._polylineAt(t).point;
           const { start, end, ctrl1, ctrl2 } = this._computeBezierPath();
           const m = 1 - t;
           return {
@@ -3208,6 +3564,7 @@
 
         // Unnormalized tangent (dP/dt) at parameter t.
         tangentAt(t) {
+          if (this._isOrtho()) return this._polylineAt(t).tangent;
           const { start, end, ctrl1, ctrl2 } = this._computeBezierPath();
           const m = 1 - t;
           return {
@@ -3216,10 +3573,39 @@
           };
         }
 
+        // Direction the path leaves the from-node / enters the to-node, as
+        // an angle. Bezier reads the curve tangent just inside the endpoint
+        // (matching the historical t=0.02 / t=0.98 sampling); an orthogonal
+        // route takes its first/last non-degenerate segment, which is
+        // always the perpendicular stub - so its arrowheads sit square to
+        // the node side.
+        _endTangentAngle(path, which) {
+          if (path.kind !== 'ortho') {
+            const t = which === 'from' ? 0.02 : 0.98;
+            const dx = this._dbez([t], path.start.x, path.ctrl1.x, path.ctrl2.x, path.end.x)[0];
+            const dy = this._dbez([t], path.start.y, path.ctrl1.y, path.ctrl2.y, path.end.y)[0];
+            return Math.atan2(dy, dx);
+          }
+          const pts = path.pts;
+          if (which === 'from') {
+            for (let i = 1; i < pts.length; i++) {
+              const dx = pts[i].x - pts[0].x, dy = pts[i].y - pts[0].y;
+              if (Math.hypot(dx, dy) > ORTHO_EPS) return Math.atan2(dy, dx);
+            }
+          } else {
+            const last = pts.length - 1;
+            for (let i = last - 1; i >= 0; i--) {
+              const dx = pts[last].x - pts[i].x, dy = pts[last].y - pts[i].y;
+              if (Math.hypot(dx, dy) > ORTHO_EPS) return Math.atan2(dy, dx);
+            }
+          }
+          return 0;
+        }
+
         ///////////////////////////////////
         ////// BEZIER NODES //////////////
         /////////////////////////////////
-        drawSmartBezier() {
+        drawEdgePath() {
             /*
             This is essentially the edges' local .drawSelf() function.
 
@@ -3241,7 +3627,8 @@
 
             ctx.save()
 
-            const { start, end, ctrl1, ctrl2 } = this._computeBezierPath();
+            const path = this._computePathPoints();
+            const { start, end, pts } = path;
             const O = this._styleOverrides || null;
 
 
@@ -3262,6 +3649,12 @@
                 ctx.lineWidth = (this.selected ? baseW * 2 : baseW) / scale;
 
                 if (O && O.cap) ctx.lineCap = O.cap;
+                // Only orthogonal routes have corners sharp enough for the
+                // join style to be visible; follow `cap` so a round-capped
+                // trace doesn't end up with mitred elbows.
+                if (path.kind === 'ortho') {
+                  ctx.lineJoin = (O && O.cap === 'round') ? 'round' : 'miter';
+                }
                 if (O && Array.isArray(O.dash)) {
                   ctx.setLineDash(O.dash.map(d => d / scale));
                   if (O.dashOffset != null) ctx.lineDashOffset = O.dashOffset / scale;
@@ -3281,8 +3674,15 @@
                 }
 
             ctx.beginPath();
-            ctx.moveTo(start.x, start.y);
-            ctx.bezierCurveTo(ctrl1.x, ctrl1.y, ctrl2.x, ctrl2.y, end.x, end.y);
+            if (path.kind === 'ortho') {
+              ctx.moveTo(pts[0].x, pts[0].y);
+              for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+            } else {
+              // Stroke the true curve, not its samples - `pts` is only what
+              // the hit test consumes.
+              ctx.moveTo(start.x, start.y);
+              ctx.bezierCurveTo(path.ctrl1.x, path.ctrl1.y, path.ctrl2.x, path.ctrl2.y, end.x, end.y);
+            }
             ctx.stroke();
 
               ctx.shadowOffsetX = 0;
@@ -3291,8 +3691,8 @@
               // Arrowheads draw unbroken regardless of stroke dash.
               if (O && Array.isArray(O.dash)) ctx.setLineDash([]);
 
-            this.pathX = (this._bez(this.segmentLocations, start.x, ctrl1.x, ctrl2.x, end.x));
-            this.pathY = (this._bez(this.segmentLocations, start.y, ctrl1.y, ctrl2.y, end.y));
+            this.pathX = pts.map(p => p.x);
+            this.pathY = pts.map(p => p.y);
 
             const bbTop = Math.min(...this.pathY) - this.hitRadius;
             const bbBot = Math.max(...this.pathY) + this.hitRadius;
@@ -3312,32 +3712,30 @@
             // ctx.restore();
 
 
+            // The heads sit exactly on the anchors (t=0 and t=1 evaluate to
+            // start/end), so only the angle needs to be route-aware.
             if (this.fromEnd == "arrow") {
-              const bx = (this._bez([0.00], start.x, ctrl1.x, ctrl2.x, end.x))[0];
-              const by = (this._bez([0.00], start.y, ctrl1.y, ctrl2.y, end.y))[0];
-              const dxA = (this._dbez([0.02], start.x, ctrl1.x, ctrl2.x, end.x))[0];
-              const dyA = (this._dbez([0.02], start.y, ctrl1.y, ctrl2.y, end.y))[0];
-              // +PI flips the head so it points back along the curve toward
+              // +PI flips the head so it points back along the path toward
               // the fromNode (the arrow sits at t=0, pointing outward).
-              const angle = Math.atan2(dyA, dxA) + Math.PI;
-              this._drawArrowHead(ctx, bx, by, angle, scale);
+              const angle = this._endTangentAngle(path, 'from') + Math.PI;
+              this._drawArrowHead(ctx, start.x, start.y, angle, scale);
             }
 
             if (this.toEnd == "arrow") {
-              const bx = (this._bez([1.0], start.x, ctrl1.x, ctrl2.x, end.x))[0];
-              const by = (this._bez([1.0], start.y, ctrl1.y, ctrl2.y, end.y))[0];
-              const dxA = (this._dbez([0.98], start.x, ctrl1.x, ctrl2.x, end.x))[0];
-              const dyA = (this._dbez([0.98], start.y, ctrl1.y, ctrl2.y, end.y))[0];
-              const angle = Math.atan2(dyA, dxA);
-              this._drawArrowHead(ctx, bx, by, angle, scale);
+              const angle = this._endTangentAngle(path, 'to');
+              this._drawArrowHead(ctx, end.x, end.y, angle, scale);
             }
-            
-            // Always cache the midpoint so the floating edge toolbar can
+
+            // Always cache the label anchor so the floating edge toolbar can
             // position itself even when there's no label yet.
-            {
+            if (path.kind === 'ortho') {
+              const mid = longestSegmentMidpoint(pts);
+              this._labelX = mid.x;
+              this._labelY = mid.y;
+            } else {
               var tMid = 0.5;
-              this._labelX = (this._bez([tMid], start.x, ctrl1.x, ctrl2.x, end.x))[0];
-              this._labelY = (this._bez([tMid], start.y, ctrl1.y, ctrl2.y, end.y))[0];
+              this._labelX = (this._bez([tMid], start.x, path.ctrl1.x, path.ctrl2.x, end.x))[0];
+              this._labelY = (this._bez([tMid], start.y, path.ctrl1.y, path.ctrl2.y, end.y))[0];
             }
 
             if (this.edge_label) {
@@ -3582,7 +3980,7 @@
             + (eff.description ? ". " + String(eff.description) : "");
         }
 
-        // Visual-only style overrides applied during drawSmartBezier.
+        // Visual-only style overrides applied during drawEdgePath.
         // Mirrors node.style() semantics: overrides persist across setColor(),
         // do not mark the canvas dirty for serialization, and are not
         // round-tripped to JSON.
@@ -3599,9 +3997,22 @@
         //   cap        - 'butt' | 'round' | 'square' for ctx.lineCap.
         //   arrowSize  - arrowhead size in screen-px (default 8).
         //   arrowStyle - 'arrow' | 'diamond' | 'dot' | 'half' (default 'arrow').
+        //   route      - 'bezier' (default) | 'orthogonal'. 'orthogonal'
+        //                replaces the curve with an axis-aligned path whose
+        //                corners are cut at 45 degrees.
         //   curvature  - multiplier on auto control-point strength.
         //                1 = default, 0 = straight line (control points
         //                snap to endpoints), >1 exaggerates the bend.
+        //                Ignored under route:'orthogonal'.
+        //   stub       - route:'orthogonal' only. Perpendicular run off the
+        //                node border before the first turn (default 24).
+        //   chamfer    - route:'orthogonal' only. Length of the 45-degree
+        //                corner cut (default 10); 0 gives hard right angles.
+        //
+        // `stub` and `chamfer` are WORLD units, unlike the screen-px-scaled
+        // `dash` / `arrowSize`: the route doubles as the hit region, and a
+        // hit region that reshaped on zoom would slide out from under the
+        // pointer.
         //
         // Usage:
         //   edge.style({ width: 3, dash: [8, 4] })   - set one or more
@@ -3747,8 +4158,8 @@
           return this;
         }
 
-        // World-space bounding rect of the bezier curve. Uses the cached
-        // boundingBox populated by drawSmartBezier; falls back to a rough
+        // World-space bounding rect of the rendered path. Uses the cached
+        // boundingBox populated by drawEdgePath; falls back to a rough
         // endpoint-to-endpoint rect if the edge has never been drawn.
         bounds() {
           const bb = this.boundingBox;
@@ -3808,7 +4219,7 @@
 
       // Offset (world units) from each anchor along its outward normal to the
       // bezier control point. Lifted from the previous inline literal in
-      // drawSmartBezier so getBezierPath/pointAt/tangentAt stay in lockstep.
+      // drawEdgePath so getBezierPath/pointAt/tangentAt stay in lockstep.
       CanvasEdge.CONTROL_STRENGTH = 160;
 
       //////////////////////////////////////////////////////////////////////////////////////
@@ -4166,22 +4577,11 @@
         // CanvasEdge.CONTROL_STRENGTH so a virtual flight curve has the same
         // shape character as a real edge would.
         _computeVirtualBezier(fromNode, toNode) {
-          const pickSide = (a, b) => {
-            const acx = a.x + a.width / 2, acy = a.y + a.height / 2;
-            const bcx = b.x + b.width / 2, bcy = b.y + b.height / 2;
-            const dx = bcx - acx, dy = bcy - acy;
-            const hw = Math.max(1, a.width  / 2);
-            const hh = Math.max(1, a.height / 2);
-            if (Math.abs(dx) / hw > Math.abs(dy) / hh) return dx > 0 ? 'right' : 'left';
-            return dy > 0 ? 'bottom' : 'top';
-          };
-          const sideVec = (side) => ({
-            dx: side === 'left' ? -1 : side === 'right' ? 1 : 0,
-            dy: side === 'top'  ? -1 : side === 'bottom' ? 1 : 0,
-          });
-
-          const f = sideVec(pickSide(fromNode, toNode));
-          const t = sideVec(pickSide(toNode,   fromNode));
+          // pickSideVec is the same axis-dominance test the orthogonal
+          // router uses to derive a missing fromSide/toSide, so a virtual
+          // flight path and a real unsided edge agree on which sides face.
+          const f = pickSideVec(fromNode, toNode);
+          const t = pickSideVec(toNode,   fromNode);
           const fc = fromNode.center(), tc = toNode.center();
           const start = { x: fc.x + f.dx * fromNode.width / 2, y: fc.y + f.dy * fromNode.height / 2, dx: f.dx, dy: f.dy };
           const end   = { x: tc.x + t.dx * toNode.width   / 2, y: tc.y + t.dy * toNode.height   / 2, dx: t.dx, dy: t.dy };
@@ -4609,8 +5009,91 @@
       //////////////////////////////////////////////////////////////////////////////////////
       // LayoutAPI - canvas.layout namespace //////////////////////////////////////////////
       ////////////////////////////////////////////////////////////////////////////////////
+      // Hard overlap separation over center-based boxes {cx, cy, w, h},
+      // mutated in place. Each pass visits every pair; any two boxes closer
+      // than `margin` on both axes are pushed apart on one axis, each moving
+      // half the overlap - the smallest nudge that clears the pair, so the
+      // input layout's shape is preserved as far as possible. O(n²) per pass.
+      //
+      // Adapted from Tzara's server-side _resolve_overlaps, with one change:
+      // the axis is the one with the least RELATIVE penetration (overlap ÷
+      // combined extent), not the least absolute. Cards are wider than tall,
+      // so absolute penetration nearly always picks y - under pressure the
+      // layout stretched into a tall column and dense piles didn't converge.
+      // Relative penetration pushes along the direction the centers are
+      // actually offset.
+      //
+      // Penetration under SEPARATE_EPS px counts as resolved, so the pass can
+      // report convergence instead of chasing float residue.
+      //
+      // Sweep-and-prune: each pass sorts by cx and stops scanning a box's
+      // partners once they're too far right to reach it, so a pass costs
+      // ~O(n log n) on a spread-out layout rather than O(n²) - force runs
+      // it every iteration. Moves within a pass can stale the order and
+      // skip a pair; the next pass (or iteration) re-sorts and catches it.
+      // A pass with no moves never staled its order, so `converged` is exact.
+      // Returns { passes, converged } - passes run, and whether the last one
+      // found nothing to move (false = ran out of passes with pairs left).
+      const SEPARATE_EPS = 0.5;
+      function separateBoxes(boxes, margin, passes) {
+        const n = boxes.length;
+        let maxW = 0;
+        for (const b of boxes) if (b.w > maxW) maxW = b.w;
+        const order = boxes.slice();
+        for (let p = 0; p < passes; p++) {
+          let moved = false;
+          order.sort((a, b) => a.cx - b.cx);
+          for (let i = 0; i < n; i++) {
+            const a = order[i];
+            const reach = (a.w + maxW) / 2 + margin;
+            for (let j = i + 1; j < n; j++) {
+              const b = order[j];
+              if (b.cx - a.cx > reach) break;
+              const dx = b.cx - a.cx, dy = b.cy - a.cy;
+              const ox = (a.w + b.w) / 2 + margin - Math.abs(dx);
+              if (ox <= SEPARATE_EPS) continue;
+              const oy = (a.h + b.h) / 2 + margin - Math.abs(dy);
+              if (oy <= SEPARATE_EPS) continue;
+              if (ox / (a.w + b.w + 2 * margin) <= oy / (a.h + b.h + 2 * margin)) {
+                const sh = dx >= 0 ? ox / 2 : -ox / 2;
+                a.cx -= sh; b.cx += sh;
+              } else {
+                const sh = dy >= 0 ? oy / 2 : -oy / 2;
+                a.cy -= sh; b.cy += sh;
+              }
+              moved = true;
+            }
+          }
+          if (!moved) return { passes: p + 1, converged: true };
+        }
+        return { passes, converged: false };
+      }
+
       class LayoutAPI {
         constructor(canvas) { this._c = canvas; }
+
+        // separate(opts) - push overlapping nodes apart until every pair is
+        // at least `margin` px apart on some axis (or `passes` runs out).
+        // Groups are skipped: they wrap their members, so "separating" a
+        // group from its own contents is meaningless. Only nodes in the set
+        // are considered - nodes outside it neither move nor act as
+        // obstacles. One tween, one undo step.
+        //   opts: nodes (default all), margin (48), passes (120),
+        //         duration, easing, fit.
+        separate(opts = {}) {
+          const c = this._c;
+          const requested = opts.nodes ? c._resolveNodes(opts.nodes) : c._nodes.slice();
+          const nodes = requested.filter(n => n.type !== 'group');
+          if (!nodes.length) return Promise.resolve();
+          const margin = opts.margin != null ? opts.margin : 48;
+          const passes = opts.passes != null ? opts.passes : 120;
+          const boxes = nodes.map(n => ({
+            cx: n.x + n.width / 2, cy: n.y + n.height / 2, w: n.width, h: n.height,
+          }));
+          this._lastSeparateStats = separateBoxes(boxes, margin, passes);
+          const positions = boxes.map(b => ({ x: b.cx - b.w / 2, y: b.cy - b.h / 2 }));
+          return this._animate(nodes, positions, opts);
+        }
 
         // auto(algorithm, opts) - apply a built-in layout.
         //   algorithm: 'grid' | 'tree' | 'force'
@@ -4770,10 +5253,27 @@
         // deferred - the snapshot record (`membership`, `groupSnap`) is the
         // architectural seed for that and other future passes.
         //
-        // Options: nodes (default all), duration, iterations, minKE, seed,
-        // repulsion, springLength, springStrength, gravity, damping,
+        // Convergence and overlap:
+        //   - Cooling: the per-step speed cap falls linearly from
+        //     maxStep × temperature to ~0, so the sim always comes to rest.
+        //     temperature 1 (default) lays out from scratch; ~0.1-0.3
+        //     refines an existing layout without reshuffling it.
+        //   - Collision: overlap is resolved positionally every step
+        //     (separateBoxes, `collidePasses` passes, `margin` px), not by a
+        //     stiff contact force - that force made bodies bounce at the
+        //     step cap forever.
+        //   - `separate` (default on) finishes with up to `separate.passes`
+        //     (120) separateBoxes passes before next, so groups rewrap the
+        //     separated positions and everything lands in the same tween and
+        //     undo step. `separate: false` skips it.
+        //
+        // Options: nodes (default all), duration, iterations, minKE,
+        // temperature, margin, collidePasses, separate, repulsion,
+        // springLength, springStrength, gravity, damping, maxStep,
         // groupSpringStrength, groupSpringLength, containmentStrength,
-        // groupPadding, x, y.
+        // groupPadding, liveGroupBounds, groupForeignRepulsion,
+        // overlapResolve (bodies inside a foreign group only),
+        // groupSeparationStrength, x, y.
         _force(opts = {}) {
           const c = this._c;
           const allNodes = c._nodes;
@@ -4784,7 +5284,7 @@
           // center-to-center, so node width/height matter. springLength and
           // groupSpringLength therefore mean "target gap" in pixels.
           const iterations          = opts.iterations          != null ? opts.iterations          : 300;
-          const minKE               = opts.minKE               != null ? opts.minKE               : 0.05;
+          const minKE               = opts.minKE               != null ? opts.minKE               : 0.01;
           const repulsion           = opts.repulsion           != null ? opts.repulsion           : 1500;
           const springLength        = opts.springLength        != null ? opts.springLength        : 220;
           const springStrength      = opts.springStrength      != null ? opts.springStrength      : 0.04;
@@ -4799,9 +5299,14 @@
           const liveGroupBounds     = opts.liveGroupBounds     != null ? opts.liveGroupBounds     : true;
           const groupForeignRepulsion = opts.groupForeignRepulsion != null ? opts.groupForeignRepulsion : 3000;
           const groupSeparationStrength = opts.groupSeparationStrength != null ? opts.groupSeparationStrength : 0.25;
+          const separate            = opts.separate === false ? null
+                                    : (typeof opts.separate === 'object' && opts.separate) || {};
+          const margin              = opts.margin              != null ? opts.margin              : 48;
+          const temperature         = opts.temperature         != null ? opts.temperature         : 1;
+          const collidePasses       = opts.collidePasses       != null ? opts.collidePasses       : 3;
           const dt = 1.0;
 
-          // ---- Phase A: snapshot ----
+          // ---- snapshot ----
           // Resolve participant set. Groups in this set will be repositioned
           // by the post-pass; non-group entries become free bodies.
           const requested = opts.nodes ? c._resolveNodes(opts.nodes) : allNodes.slice();
@@ -4904,14 +5409,17 @@
           const centerX = opts.x != null ? opts.x : sx / bodies.length;
           const centerY = opts.y != null ? opts.y : sy / bodies.length;
 
-          // ---- Phase B: force loop ----
+          // ---- force loop ----
+          // itersRun / meanKE feed _lastForceStats (diagnostics for tuning).
+          let itersRun = 0, meanKE = 0;
           for (let iter = 0; iter < iterations; iter++) {
+            itersRun = iter + 1;
             for (const b of bodies) { b.fx = 0; b.fy = 0; }
 
             // Recompute live bboxes for participating groups from current
             // member positions + groupPadding. Lets foreign-repulsion,
             // group-vs-group separation, and bg edge springs react as the
-            // group's footprint shifts during the sim - so the final Phase C
+            // group's footprint shifts during the sim - so the final step
             // resize doesn't end up enclosing nodes that drifted in.
             if (liveGroupBounds) {
               for (const g of participantGroups) {
@@ -4939,10 +5447,9 @@
             }
 
             // Repulsion (Coulomb-like, O(n²)) - gap-based so node sizes
-            // matter. gap = max(|dx|-(wA+wB)/2, |dy|-(hA+hB)/2). When gap<0
-            // the bboxes overlap and we apply a strong linear separation
-            // proportional to the overlap. When gap>=0, Coulomb on the gap.
-            // Continuous at gap=0: both branches give `repulsion` there.
+            // matter. gap = max(|dx|-(wA+wB)/2, |dy|-(hA+hB)/2), clamped at
+            // 0: overlap is not a force's job - the per-step collision pass
+            // after integration resolves it positionally.
             // Deterministic angular nudge handles fully-coincident pairs.
             for (let i = 0; i < bodies.length; i++) {
               for (let j = i + 1; j < bodies.length; j++) {
@@ -4959,14 +5466,8 @@
                 const ux = dx / dist, uy = dy / dist;
                 const gapX = Math.abs(dx) - (a.w + bb.w) / 2;
                 const gapY = Math.abs(dy) - (a.h + bb.h) / 2;
-                const gap  = Math.max(gapX, gapY);
-                let f;
-                if (gap < 0) {
-                  f = (-gap) * overlapResolve + repulsion;
-                } else {
-                  const r = gap + 1;
-                  f = repulsion / (r * r);
-                }
+                const r = Math.max(0, Math.max(gapX, gapY)) + 1;
+                const f = repulsion / (r * r);
                 a.fx  += f * ux; a.fy  += f * uy;
                 bb.fx -= f * ux; bb.fy -= f * uy;
               }
@@ -5131,23 +5632,40 @@
               b.fy += gravity * (centerY - b.cy);
             }
 
-            // Integrate + accumulate KE for convergence check. Velocity is
-            // capped at maxStep so overlap-resolution spikes can't fling a
-            // body across the canvas in a single step.
-            let ke = 0;
+            // Integrate. Cooling: the per-step speed cap starts at
+            // maxStep × temperature and falls linearly to ~0 by the last
+            // iteration, so the sim always comes to rest instead of
+            // oscillating around a stiff equilibrium.
+            const cap = maxStep * temperature * (1 - iter / iterations);
             for (const b of bodies) {
               b.vx = (b.vx + b.fx * dt) * damping;
               b.vy = (b.vy + b.fy * dt) * damping;
               const sp2 = b.vx * b.vx + b.vy * b.vy;
-              if (sp2 > maxStep * maxStep) {
-                const k = maxStep / Math.sqrt(sp2);
+              if (sp2 > cap * cap) {
+                const k = cap / Math.sqrt(sp2);
                 b.vx *= k; b.vy *= k;
               }
+              b.px = b.cx; b.py = b.cy;
               b.cx += b.vx * dt;
               b.cy += b.vy * dt;
+            }
+
+            // Collision: `collidePasses` positional separateBoxes passes keep
+            // bodies `margin` apart (one pass can't keep up with a dense
+            // cluster being pulled inward). Velocity becomes the actual displacement
+            // (position-based dynamics), so a body isn't driven back into
+            // the pair it was just pushed out of. KE is measured after, so
+            // minKE (mean per body - same meaning at any node count) sees
+            // real motion.
+            separateBoxes(bodies, margin, collidePasses);
+            let ke = 0;
+            for (const b of bodies) {
+              b.vx = (b.cx - b.px) / dt;
+              b.vy = (b.cy - b.py) / dt;
               ke += b.vx * b.vx + b.vy * b.vy;
             }
-            if (iter > 20 && ke < minKE) break;
+            meanKE = ke / bodies.length;
+            if (iter > 20 && meanKE < minKE) break;
           }
 
           // Remove net translation: foreign-group repulsion, bg edge springs,
@@ -5164,7 +5682,22 @@
             for (const b of bodies) { b.cx += dxShift; b.cy += dyShift; }
           }
 
-          // ---- Phase C: post-pass - wrap each participating group around
+          // Hard separation of what the sim left overlapping. Half-shifts are
+          // symmetric, so the centroid snapped above is preserved.
+          const sep = separate ? separateBoxes(bodies, margin,
+            separate.passes != null ? separate.passes : 120) : null;
+
+          // Private diagnostics for tuning pages.
+          // meanKE is mean squared speed per body; a sim still pinned at the
+          // step cap reads ≈ maxStep².
+          this._lastForceStats = {
+            bodies: bodies.length, iterations: itersRun, maxIterations: iterations,
+            meanKE, maxStep,
+            separatePasses: sep ? sep.passes : 0,
+            separateConverged: sep ? sep.converged : null,
+          };
+
+          // ---- post-pass - wrap each participating group around
           // its original members' final positions.
           const targetNodes = [];
           const targetPositions = [];
@@ -5195,7 +5728,7 @@
             });
           }
 
-          // ---- Phase D: tween, with group resize folded into the same
+          // ---- tween, with group resize folded into the same
           // undo step via the finalize callback.
           const finalize = () => {
             for (const [g, sz] of targetSizes) {
@@ -5375,7 +5908,7 @@
 
         // Serialize one live node back to .canvas node-data. _extraData
         // (unknown passthrough keys) is spread first so it round-trips.
-        // Accessibility : write authored a11y fields back as a top-level
+        // Accessibility: write authored a11y fields back as a top-level
         // `accessibility` key. Derived/hint-sourced values are intentionally
         // NOT persisted - they reproduce on next load and shouldn't outlive
         // content changes.
@@ -5481,14 +6014,15 @@
           return { nodes: newNodes, edges: newEdges };
         }
 
-        // Reconcile (Phase 3.3) - make the canvas equal a full desired-state
+        // make the canvas equal a full desired-state
         // snapshot, minimally. Diffs incoming {nodes, edges} against the live
         // graph by id and applies adds / in-place updates / removes as ONE undo
         // step, preserving viewport, selection, focus, and the DOM of unchanged
         // nodes (no clearCanvas, no recenter, no markdown/file re-fetch).
         //
         // Contrast with the other inbound paths:
-        //   canvas.data = …  destructive hard reset (clear + reload + recenter)
+        //   canvas.data = …  destructive hard reset (clear + reload + re-center
+        //                    the view; node coordinates are left as authored)
         //   io.mergeData()   paste a fragment (always creates new, remaps ids)
         //   io.reconcile()   sync to a complete snapshot in place
         //
@@ -6031,18 +6565,30 @@
               + '</foreignObject>');
           }
 
-          // Edges: bezier path matching drawSmartBezier's geometry.
+          // Edges: path matching drawEdgePath's geometry. Orthogonal edges
+          // export as a polyline so the SVG matches what is on screen;
+          // these run off live CanvasEdge instances, so the route override
+          // is readable here (unlike the JSON-only thumbnail renderer).
           for (const e of c._edges) {
             const fromNode = c.getNode(e.fromNode);
             const toNode   = c.getNode(e.toNode);
             if (!fromNode || !toNode) continue;
             const start = e.rectEdgePoint(fromNode, "from");
             const end   = e.rectEdgePoint(toNode,   "to");
-            const { ctrl1: c1, ctrl2: c2 } = CanvasEdge._bezierControls(start, end);
             const stroke = e.borderColor || '#333';
-            parts.push('<path d="M ' + start.x + ' ' + start.y
-              + ' C ' + c1.x + ' ' + c1.y + ', ' + c2.x + ' ' + c2.y
-              + ', ' + end.x + ' ' + end.y + '" fill="none" stroke="' + esc(stroke) + '" stroke-width="1.5"/>');
+            let d;
+            if (e._isOrtho()) {
+              const pts = e.getPathPoints();
+              d = 'M ' + pts[0].x + ' ' + pts[0].y;
+              for (let i = 1; i < pts.length; i++) d += ' L ' + pts[i].x + ' ' + pts[i].y;
+            } else {
+              const { ctrl1: c1, ctrl2: c2 } = CanvasEdge._bezierControls(start, end);
+              d = 'M ' + start.x + ' ' + start.y
+                + ' C ' + c1.x + ' ' + c1.y + ', ' + c2.x + ' ' + c2.y
+                + ', ' + end.x + ' ' + end.y;
+            }
+            parts.push('<path d="' + d + '" fill="none" stroke="' + esc(stroke)
+              + '" stroke-width="1.5"/>');
             if (e.edge_label) {
               const lx = (start.x + end.x) / 2, ly = (start.y + end.y) / 2;
               parts.push('<text x="' + lx + '" y="' + ly
@@ -6720,7 +7266,7 @@
           // or a falsy value to keep the card). resolveEmbed takes precedence.
           this.allowEmbeds = options.allowEmbeds === true;
           this.resolveEmbed = (typeof options.resolveEmbed === "function") ? options.resolveEmbed : null;
-          // Inbound data contract (Phase 4). By default the load-time gate
+          // Inbound data contract. By default the load-time gate
           // (_normalizeData) repairs untrusted .canvas data - coercing bad
           // geometry, dropping orphan edges, deduping/generating ids - and
           // reports what it changed (canvas.lastLoadReport + 'load' event).
@@ -6734,7 +7280,7 @@
           this.onSaveRequest = typeof options.onSaveRequest === "function" ? options.onSaveRequest : null;
           this.onContextMenu = typeof options.onContextMenu === "function" ? options.onContextMenu : null;
           this.onFileDrop    = typeof options.onFileDrop    === "function" ? options.onFileDrop    : null;
-          // Accessibility : host-supplied callback invoked once per
+          // Accessibility: host-supplied callback invoked once per
           // node/edge on first _applyA11y(). Return a partial accessibility
           // object (label, description, role, …) to override derived
           // defaults. Persisted authored data overrides this; runtime
@@ -6744,7 +7290,7 @@
             ? options.accessibilityHints
             : null;
 
-          // Keyboard focus . focusedNode is the single node that
+          // Keyboard focus. focusedNode is the single node that
           // owns keyboard focus, distinct from selectedNodes (which is
           // a multi-element set). Roving tabindex: exactly one node has
           // tabindex=0 at a time (the focused one), all others -1, so
@@ -6971,17 +7517,23 @@
           // Mark the root so CSS variables scoped to .tzara-canvas-root apply
           // to this instance's subtree, and so the runtime-injected scrollbar
           // stylesheet's .tzara-canvas-root-prefixed selectors match.
-          this.outer_container.classList.add('tzara-canvas-root');
+          // Only strip it on destroy if we were the ones who added it.
+          if (!this.outer_container.classList.contains('tzara-canvas-root')) {
+            this.outer_container.classList.add('tzara-canvas-root');
+            this._addedRootClass = true;
+          }
 
-          // Accessibility . Mark the host element as an application
+          // Accessibility. Mark the host element as an application
           // landmark so screen readers pass keystrokes through to our
           // handlers instead of intercepting them for browse-mode
           // navigation - the canvas owns its keyboard surface. The
           // aria-label text is refreshed by _updateWrapperAriaLabel()
           // at end-of-constructor and after each _markDirty(). The
           // hidden <h2> gives a heading-navigation landing point.
-          this.outer_container.setAttribute('role', 'application');
-          this.outer_container.setAttribute('aria-roledescription', 'canvas graph');
+          // All host-element writes go through _setHostAttr/_setHostStyle so
+          // destroy() can restore the host's originals (see _restoreHost).
+          this._setHostAttr('role', 'application');
+          this._setHostAttr('aria-roledescription', 'canvas graph');
           // tabindex=0 makes the canvas a real keyboard tab stop, so a
           // keyboard-only user can Tab onto it even before any node is
           // focused. Built-in shortcuts are scoped to this element (the
@@ -6990,14 +7542,14 @@
           // hijack host-page keys. Roving tabindex on nodes still drives
           // intra-canvas navigation once focus is inside.
           if (!this.outer_container.hasAttribute('tabindex')) {
-            this.outer_container.setAttribute('tabindex', '0');
+            this._setHostAttr('tabindex', '0');
           }
           this._a11yHeading = document.createElement('h2');
           this._a11yHeading.className = 'tc-sr-only';
           this._a11yHeading.textContent = 'Canvas graph';
           this.outer_container.appendChild(this._a11yHeading);
 
-          // Accessibility : hidden DOM mirror of the edge graph.
+          // Accessibility: hidden DOM mirror of the edge graph.
           //   _a11yEdgesList - <ul> of edges, navigable as a list
           //     landmark. Each CanvasEdge owns one <li>; the text is
           //     refreshed by edge._applyA11y() from its effective
@@ -7018,7 +7570,7 @@
           this._a11yDescriptions.className = 'tc-sr-only';
           this.outer_container.appendChild(this._a11yDescriptions);
 
-          // Accessibility : polite live region for announcing
+          // Accessibility: polite live region for announcing
           // state changes (selection, delete, edit commit, edge
           // create, mode toggle). role="status" implies aria-live=
           // "polite" and aria-atomic="true"; both are set explicitly
@@ -7166,8 +7718,7 @@
           // Count this instance against the shared <head> styles so the last
           // destroy() can reclaim them (see _releaseSharedStyles).
           _tzaraLiveInstances++;
-          var viewport = this.outer_container.getBoundingClientRect();
-          this.outer_container.style.scale = 1;
+          this._setHostStyle('scale', '1');
 
           this._handlers = {
             pointermove:    e => this.event_mousemove(e),
@@ -7193,6 +7744,9 @@
           };
 
           this.container = document.createElement("div");
+          // tc-layer: structural layers get their box model pinned by the
+          // shared stylesheet so host resets can't shift node geometry.
+          this.container.className = "tc-layer";
           this.container.style.overflow = "hidden";
           this.container.style.position = "relative";
           this.container.style.width = "100%";
@@ -7232,6 +7786,7 @@
           // Image-typed backgrounds stay on background_layer below, which is
           // world-transformed (images have a natural position in world space).
           this.background_fixed_layer = document.createElement("div");
+          this.background_fixed_layer.className = "tc-layer";
           this.background_fixed_layer.style.position = "absolute";
           this.background_fixed_layer.style.top = "0";
           this.background_fixed_layer.style.left = "0";
@@ -7246,6 +7801,7 @@
           // Its transform is kept in sync with drawing_container via
           // updateTransform().
           this.background_container = document.createElement("div");
+          this.background_container.className = "tc-layer";
           this.background_container.style.position = "absolute";
           this.background_container.style.top = 0;
           this.background_container.style.left = 0;
@@ -7290,6 +7846,7 @@
           // staying visually behind groups. Transform synced via
           // updateTransform().
           this.marquee_container = document.createElement("div");
+          this.marquee_container.className = "tc-layer";
           this.marquee_container.style.position = "absolute";
           this.marquee_container.style.top = 0;
           this.marquee_container.style.left = 0;
@@ -7301,6 +7858,7 @@
           this.marquee_container.appendChild(this.marquee_el);
 
           this.group_container = document.createElement("div");
+          this.group_container.className = "tc-layer";
           this.group_container.style.position = "absolute";
           this.group_container.style.top = 0;
           this.group_container.style.left = 0;
@@ -7312,6 +7870,7 @@
           this.group_container.style.isolation = "isolate";
 
           this.drawing_container = document.createElement("div");
+          this.drawing_container.className = "tc-layer";
           this.drawing_container.style.position = "absolute";
           this.drawing_container.style.top = 0;
           this.drawing_container.style.left = 0;
@@ -7320,9 +7879,11 @@
 
 
           this.hitbox_container = document.createElement("div");
+          this.hitbox_container.className = "tc-layer";
           this.hitbox_container.style.transformOrigin = "0 0";
 
           this.canvas = document.createElement("canvas");
+          this.canvas.className = "tc-layer";
           this.ctx = this.canvas.getContext("2d");
 
           this._dpr = window.devicePixelRatio || 1;
@@ -7368,6 +7929,7 @@
           this.panY = 0;
           this.isPanning = false;
           this._panDidMove = false;
+          this._panDist = 0;
 
           this.resizing = null;
           this.resizeSides = null;
@@ -7391,14 +7953,17 @@
             // zero-sized or the backing store already matches, subsuming the old
             // manual guards.
             if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = 0; }
-            if (this._sizeCanvas()) this.draw();
+            const sized = this._sizeCanvas();
+            // A load that ran before the container had a size still owes the
+            // view its initial centering (see _centerViewOnContent).
+            if (this._centerPending && this._centerViewOnContent()) return;
+            if (sized) this.draw();
           });
           this._resizeObserver.observe(this.outer_container);
           this._watchDpr();
 
           this.container.appendChild(this.drawing_container);
 
-          this.hitbox_container.style.border = "1px dotted solid";
           this.hitbox_container.style.backgroundColor = "var(--tc-hitbox-bg)"
           this.hitbox_container.style.position = "absolute";
           this.hitbox_container.style.left = "0px";
@@ -7497,8 +8062,8 @@
           this.data = data;
 
           // History namespace must initialize AFTER nodes/edges exist so the
-          // baseline snapshot reflects the loaded state, including the
-          // recentering applied by the data setter.
+          // baseline snapshot reflects the loaded state, including the view
+          // centering applied by the data setter.
           this.history = new HistoryAPI(this, { depth: options.historyDepth });
 
           this.requestDraw();
@@ -7632,7 +8197,7 @@
           if (next) this.setFocusedNode(next, { focus: false });
         }
 
-        // ---- a11y mirror plumbing  ----
+        // ---- a11y mirror plumbing ----
 
         // Recompute a single node's connections-summary span content
         // from its current incident edges. Edges with effective
@@ -7696,7 +8261,7 @@
           this._showHelpDialog();
         }
 
-        // ---- help dialog  ----
+        // ---- help dialog ----
 
         // Open the keyboard-shortcut help dialog. Renders from HELP_TOPICS
         // for ordering and descriptions; keyboard entries (action-tagged)
@@ -7832,7 +8397,7 @@
           }
         }
 
-        // ---- live region announcements  ----
+        // ---- live region announcements ----
 
         // Write a single string to the polite aria-live region. Same-
         // text writes get a brief clear-then-rewrite so AT re-announce
@@ -7903,18 +8468,64 @@
 
         // Refresh the host element's aria-label with current node/edge
         // counts. Cheap (two .length reads) so it can be called from
-        // _markDirty after every mutation. P1 ships a count; later phases
-        // can layer authored titles on top.
+        // _markDirty after every mutation.
         _updateWrapperAriaLabel() {
           if (!this.outer_container) return;
           const nc = this._nodes ? this._nodes.length : 0;
           const ec = this._edges ? this._edges.length : 0;
           const nWord = nc === 1 ? "node" : "nodes";
           const eWord = ec === 1 ? "edge" : "edges";
-          this.outer_container.setAttribute(
+          this._setHostAttr(
             "aria-label",
             "Canvas with " + nc + " " + nWord + " and " + ec + " " + eWord
           );
+        }
+
+        // The host element (outer_container) is borrowed, not owned. Every
+        // attribute and inline style we write on it goes through these
+        // helpers, which record the host's original value the first time we
+        // touch it; destroy() puts them all back via _restoreHost, so a
+        // torn-down canvas leaves no role="application", tabindex,
+        // aria-label, or inline styles behind on the host's element.
+        _setHostAttr(name, value) {
+          const saved = this._hostAttrs || (this._hostAttrs = new Map());
+          if (!saved.has(name)) saved.set(name, this.outer_container.getAttribute(name));
+          this.outer_container.setAttribute(name, value);
+        }
+
+        _setHostStyle(prop, value) {
+          const saved = this._hostStyles || (this._hostStyles = new Map());
+          const s = this.outer_container.style;
+          if (!saved.has(prop)) saved.set(prop, [s.getPropertyValue(prop), s.getPropertyPriority(prop)]);
+          s.setProperty(prop, value);
+        }
+
+        // Put one borrowed inline style back to the host's original value.
+        _restoreHostStyle(prop) {
+          if (!this._hostStyles || !this._hostStyles.has(prop)) return;
+          const [value, priority] = this._hostStyles.get(prop);
+          this._hostStyles.delete(prop);
+          if (value) this.outer_container.style.setProperty(prop, value, priority);
+          else this.outer_container.style.removeProperty(prop);
+        }
+
+        _restoreHost() {
+          const el = this.outer_container;
+          if (this._addedRootClass) {
+            el.classList.remove('tzara-canvas-root');
+            this._addedRootClass = false;
+          }
+          if (this._hostAttrs) {
+            for (const [name, value] of this._hostAttrs) {
+              if (value === null) el.removeAttribute(name);
+              else el.setAttribute(name, value);
+            }
+            this._hostAttrs = null;
+          }
+          if (this._hostStyles) {
+            for (const prop of [...this._hostStyles.keys()]) this._restoreHostStyle(prop);
+            this._hostStyles = null;
+          }
         }
 
         // Resolves after the canvas's container has been laid out by the
@@ -8820,7 +9431,7 @@
           if (theme.cssVars && this.outer_container) {
             this._themeCssVarKeys = [];
             for (const k of Object.keys(theme.cssVars)) {
-              this.outer_container.style.setProperty(k, theme.cssVars[k]);
+              this._setHostStyle(k, theme.cssVars[k]);
               this._themeCssVarKeys.push(k);
             }
           }
@@ -8945,7 +9556,7 @@
 
           // Remove cssVars we set.
           if (this._themeCssVarKeys && this.outer_container) {
-            for (const k of this._themeCssVarKeys) this.outer_container.style.removeProperty(k);
+            for (const k of this._themeCssVarKeys) this._restoreHostStyle(k);
           }
           this._themeCssVarKeys = null;
         }
@@ -9100,12 +9711,19 @@
         }
 
         event_wheel(e) {
+            // preventDefault only on the paths that actually consume the
+            // wheel (node scroll, canvas zoom). A zoom-disabled / readOnly
+            // canvas must not swallow the host page's scroll.
 
-            e.preventDefault();
+            // Normalize to pixels: Firefox reports mouse wheels in lines
+            // (deltaMode 1, ~3 per notch) and some devices in pages (2).
+            const rect = this.container.getBoundingClientRect();
+            const deltaY = e.deltaMode === 1 ? e.deltaY * 40
+                         : e.deltaMode === 2 ? e.deltaY * rect.height
+                         : e.deltaY;
 
             // If the wheel is over (or operating on) a node whose content
             // overflows, scroll that node instead of zooming the canvas.
-            const rect = this.container.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
             const wheelWorld = this.toWorld(mouseX, mouseY);
@@ -9118,7 +9736,8 @@
                 if (sel._scrollEl && this._scrollbarWidth(sel) > 0) scrollTarget = sel;
             }
             if (scrollTarget) {
-                scrollTarget._scrollEl.scrollTop += e.deltaY;
+                e.preventDefault();
+                scrollTarget._scrollEl.scrollTop += deltaY;
                 return;
             }
 
@@ -9126,13 +9745,14 @@
             if (!this._can('zoom')) {
               return;
             }
+            e.preventDefault();
 
             // Delta-based zoom: step proportional to wheel delta magnitude.
             // Math.exp keeps it multiplicative so zoom in then out by the same delta returns
             // to the same scale. ~0.001 gives a 100px wheel notch ≈ 1.105x (close to old feel),
             // while trackpad pixel-deltas of 4-10px become gentle 1.004-1.011x steps.
             const ZOOM_SENSITIVITY = 0.001;
-            const zoomFactor = Math.exp(-e.deltaY * ZOOM_SENSITIVITY);
+            const zoomFactor = Math.exp(-deltaY * ZOOM_SENSITIVITY);
             const newScale = Math.min(Math.max(this.scale * zoomFactor, 0.2), 5);
 
             this.panX = mouseX - (mouseX - this.panX) * (newScale / this.scale);
@@ -9356,7 +9976,13 @@
                 // user drags diagonally against a locked axis.
                 const dx = this._can('panX') ? e.movementX : 0;
                 const dy = this._can('panY') ? e.movementY : 0;
-                if (dx || dy) this._panDidMove = true;
+                // The gesture only counts as a pan (and so only suppresses the
+                // context menu on release) once it clears a few pixels - a
+                // shaky right-click on a node still opens the menu.
+                if (dx || dy) {
+                  this._panDist = (this._panDist || 0) + Math.abs(dx) + Math.abs(dy);
+                  if (this._panDist > 4) this._panDidMove = true;
+                }
                 this.panX += dx;
                 this.panY += dy;
                 this.updateTransform();
@@ -9557,13 +10183,12 @@
         ////////////////////////
         event_mousedown(e) {
           /*
-          There are three things to click on:
-          1. open space
-            RIGHT DOWN + MOVE : pans everything
-          2. node
-            LEFT (mouse down, mouse move) Drag node around
+          RIGHT DOWN + MOVE : pans everything, anywhere on the canvas.
 
-          3. edge
+          LEFT routes on what was hit:
+          1. open space - marquee select
+          2. node       - scrollbar / connect handle / resize edge / drag
+          3. edge       - select, or drag an endpoint loose to reattach
           */
 
             e.preventDefault();
@@ -9577,8 +10202,33 @@
             const rect = this.container.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
-          
+
             const { x, y } = this.toWorld(mouseX, mouseY);
+
+            // Right button always pans, whatever sits under the cursor. A
+            // crowded canvas can leave no reachable open space, so a node /
+            // group / edge hit must not swallow the gesture. The press
+            // deliberately leaves selection, focus and z-order untouched -
+            // panning is a view gesture, and event_contextmenu does its own
+            // hit testing for the menu that follows a press without a drag.
+            if (e.button === 2) {
+              // Unless another gesture already owns the pointer (node drag,
+              // resize, edge draft, scrollbar) - those finish on their own
+              // mouseup, which would otherwise return before clearing the pan.
+              if (this._dragPending || this.dragging || this.resizing
+                  || this.scrollingNode || this.edgeDraft) return;
+              this.marqueeActive = false;
+              this._panDidMove = false;
+              this._panDist = 0;
+              // Only enter pan mode if at least one axis is allowed -
+              // otherwise the cursor would flash "grab" with no effect.
+              if (this._can('panX') || this._can('panY')) {
+                this.isPanning = true;
+                this.cursor = "grab";
+              }
+              this.requestDraw();
+              return;
+            }
 
             const node = this.hitNode(x, y), edge = this.hitEdge(x, y);
 
@@ -9702,16 +10352,6 @@
                   this.marqueeStartX = x;
                   this.marqueeStartY = y;
                 }
-
-              if (e.button == 2) {
-                this.marqueeActive = false;
-                // Only enter pan mode if at least one axis is allowed -
-                // otherwise the cursor would flash "grab" with no effect.
-                if (this._can('panX') || this._can('panY')) {
-                  this.isPanning = true;
-                  this.cursor = "grab";
-                }
-              }
             }
             this.requestDraw();
             this._maybeEmitSelectionChange();
@@ -10972,8 +11612,11 @@
             end = { x: d.mouseX, y: d.mouseY, dx: 0, dy: 0 };
           }
           const s = this._edgePreviewStyle || {};
+          const ortho = s.route === 'orthogonal';
           const curvature = s.curvature != null ? s.curvature : 1;
-          const { ctrl1, ctrl2 } = CanvasEdge._bezierControls(start, end, curvature);
+          const { ctrl1, ctrl2 } = ortho
+            ? { ctrl1: null, ctrl2: null }
+            : CanvasEdge._bezierControls(start, end, curvature);
           const ctx = this.ctx;
           ctx.save();
           ctx.strokeStyle = s.stroke != null ? s.stroke : this._palette.edgePreviewColor;
@@ -10993,8 +11636,32 @@
             ctx.shadowBlur  = (s.glow.blur != null ? s.glow.blur : 6) / this.scale;
           }
           ctx.beginPath();
-          ctx.moveTo(start.x, start.y);
-          ctx.bezierCurveTo(ctrl1.x, ctrl1.y, ctrl2.x, ctrl2.y, end.x, end.y);
+          if (ortho) {
+            let target = end;
+            if (!(end.dx || end.dy)) {
+              // Free-floating drag: no target side exists yet. Derive the
+              // approach axis from the drag VECTOR rather than raw mouse
+              // position - the latter makes the preview snap between route
+              // shapes as the pointer wanders. The normal points back the
+              // way the trace came, mirroring a real node's outward normal.
+              const vx = end.x - start.x, vy = end.y - start.y;
+              target = Math.abs(vx) >= Math.abs(vy)
+                ? { x: end.x, y: end.y, dx: vx >= 0 ? -1 : 1, dy: 0 }
+                : { x: end.x, y: end.y, dx: 0, dy: vy >= 0 ? -1 : 1 };
+            }
+            const pts = computeOrthoRoute(start, target, {
+              stub:     s.stub,
+              chamfer:  s.chamfer,
+              fromRect: d.fromNode,
+              toRect:   d.toNode || null,
+            });
+            ctx.lineJoin = s.cap === 'round' ? 'round' : 'miter';
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          } else {
+            ctx.moveTo(start.x, start.y);
+            ctx.bezierCurveTo(ctrl1.x, ctrl1.y, ctrl2.x, ctrl2.y, end.x, end.y);
+          }
           ctx.stroke();
           ctx.restore();
         }
@@ -11392,7 +12059,7 @@
           // M toggles an explicit nav-mode override so a user with a
           // selection can navigate focus without losing it. Only meaningful
           // when a selection is present; with no selection we're already
-          // in navigate mode. Announce the effective mode if it
+          // in navigate mode. announce the effective mode if it
           // actually flipped (silent no-op otherwise).
           const prevMode = this._arrowMode();
           this._navigationModeOverride = this._navigationModeOverride === "navigate" ? null : "navigate";
@@ -11561,8 +12228,12 @@
         // unaffected. Returns true if the backing store actually changed (so the
         // resize/DPR paths know whether a redraw is warranted), false otherwise.
         _sizeCanvas() {
-          if (!this.outer_container || !this.canvas) return false;
-          const vp = this.outer_container.getBoundingClientRect();
+          if (!this.container || !this.canvas) return false;
+          // Size to this.container (the host's content box), not the host
+          // element's border box: a host that pads or borders its root would
+          // otherwise get an edge canvas larger than the node layers, and
+          // edges would drift once the browser squeezed it back to fit.
+          const vp = this.container.getBoundingClientRect();
           if (vp.width === 0 || vp.height === 0) return false;
           const dpr = window.devicePixelRatio || 1;
           const bw = Math.round(vp.width * dpr);
@@ -11883,7 +12554,7 @@
 
           for (const n of this._nodes) {
             if (!n._dom) continue;
-            // Phase 1: clear prev applied keys (hover + selection) and
+            // clear prev applied keys (hover + selection) and
             // restore the theme/per-node style overrides on those keys.
             const hk = n._dom._tzAppliedHoverStyleKeys;
             const sk = n._dom._tzAppliedSelectionStyleKeys;
@@ -11900,7 +12571,7 @@
             }
             if (cleared) n._applyStyleOverrides();
 
-            // Phase 2: apply hover layer.
+            // apply hover layer.
             const isSelected = selSet.has(n);
             if (n === hoverTarget && !isSelected && !n.isDown) {
               const resolved = resolve(hoverOverride, DEFAULT_HOVER_STYLE, n);
@@ -11914,7 +12585,7 @@
               }
             }
 
-            // Phase 3: apply selection layer (wins over hover on shared keys).
+            // apply selection layer (wins over hover on shared keys).
             if (isSelected) {
               const resolved = resolve(selOverride, DEFAULT_SEL_STYLE, n);
               const keys = n._dom._tzAppliedSelectionStyleKeys
@@ -12740,7 +13411,7 @@
 
           this._edges.forEach(e => {
             if (e._hiddenForReattach) return;
-            e.drawSmartBezier();
+            e.drawEdgePath();
           });
 
           if (this.edgeDraft) {
@@ -12782,7 +13453,7 @@
         }
         set cursor(cursor) {
           this._cursor = cursor;
-          this.outer_container.style.cursor = cursor;
+          this._setHostStyle('cursor', cursor);
         }
 
         /////////////////////////////////////////////////////////
@@ -12814,14 +13485,37 @@
 
           if (this._nodes.length === 0) return;
 
-          var node_bounding_box = getBoundingBox(this._nodes);
+          this._centerViewOnContent();
+        }
 
-          var centerX = (node_bounding_box.right + node_bounding_box.left) / 2;
-          var centerY = (node_bounding_box.top + node_bounding_box.bottom) / 2;
-
-          this._nodes.forEach(n => {
-            n._moveBy(-centerX + this.canvas.width/2, -centerY + this.canvas.height/2);
-          });
+        // Pan (at the current zoom) so the content's bounding box is centered
+        // in the viewport. Loading centers the *view* this way instead of
+        // moving the nodes: node coordinates stay exactly as authored, so a
+        // save right after a load round-trips the file unchanged and an
+        // io.reconcile() against that same file sees no movement.
+        //
+        // Returns false when the container hasn't been laid out yet (a canvas
+        // constructed inside a display:none tab, say). In that case the
+        // centering is left pending and retried from the ResizeObserver, once
+        // the container has a real size - unless the host moved the camera
+        // first, which clears the flag via _emitViewportChange.
+        _centerViewOnContent() {
+          if (!this._nodes.length) return false;
+          const view = this.container.getBoundingClientRect();
+          if (!view.width || !view.height) {
+            this._centerPending = true;
+            return false;
+          }
+          const box = getBoundingBox(this._nodes);
+          const centerX = (box.right + box.left) / 2;
+          const centerY = (box.top + box.bottom) / 2;
+          this._centerPending = false;
+          this.panX = view.width  / 2 - centerX * this.scale;
+          this.panY = view.height / 2 - centerY * this.scale;
+          this.updateTransform();
+          this.requestDraw();
+          this._emitViewportChange();
+          return true;
         }
 
         resetCanvas() {
@@ -13055,6 +13749,9 @@
           if (this._a11yLiveRegion && this._a11yLiveRegion.parentNode) {
             this._a11yLiveRegion.parentNode.removeChild(this._a11yLiveRegion);
           }
+          // Last, so nothing above (clearCanvas → aria-label refresh, cursor
+          // resets) can re-dirty the host after we hand it back.
+          this._restoreHost();
           this._handlers = null;
         }
 
@@ -13124,7 +13821,7 @@
                           && nextNodes.every((n, i) => n === this.selectedNodes[i]);
           const sameEdge = nextEdge === this.selectedEdge;
           if (sameNodes && sameEdge) return;
-          // Keep edge.selected (read by drawSmartBezier) in lockstep with
+          // Keep edge.selected (read by drawEdgePath) in lockstep with
           // selectedEdge. Mouse handlers set this flag directly; programmatic
           // selection via setSelection/clearSelection used to miss it.
           if (this.selectedEdge && this.selectedEdge !== nextEdge) {
@@ -13156,6 +13853,10 @@
         }
 
         _emitViewportChange() {
+          // Any camera move means the host (or a gesture) has taken over
+          // framing, so a load that couldn't center yet must not jump the
+          // view later. _centerViewOnContent clears this before emitting.
+          this._centerPending = false;
           this._emit('viewportChange', { pan: { x: this.panX, y: this.panY }, zoom: this.scale });
         }
 
@@ -13251,7 +13952,7 @@
           }
         }
 
-        // Load-time normalization gate (Phase 4). The single inbound boundary
+        // Load-time normalization gate. The single inbound boundary
         // where untrusted .canvas data is made safe to construct from, sharing
         // its rule predicates (finiteOr, edgeKey) with the read-only validate().
         // Returns clean plain { nodes, edges } plus a report of every change so a

@@ -400,6 +400,7 @@ These are the internal tool names you may list in `capabilities:`. All are vault
 | `find_near_duplicates` | Highly similar but **unlinked** page pairs (merge candidates). | `threshold` (0.5–1.0, def 0.88), `path_prefix`, `limit` (def 30) |
 | `find_missing_links` | Related-but-unlinked page pairs (new-link candidates). | `low` (def 0.62), `high` (def 0.88), `path_prefix`, `limit` (def 40) |
 | `list_stale_stubs` | Short pages whose file hasn't been modified in `stale_days` (likely abandoned), judged by the file's date on this machine. | `stale_days` (def 180), `max_chars` (def 400), `path_prefix`, `limit` (def 40) |
+| `list_broken_links` | Links pointing at a page that isn't there, one row per link: `kind` is `planned` (never created - write it, or drop the link) or `deleted` (the page was removed - fix the linking page). Links to files that exist but aren't indexed, such as canvases and agent output, are not reported. Wikilink syntax quoted in prose looks exactly like a real link, so have the agent read the source page before it proposes a change. | `path_prefix`, `limit` (1-200, def 50) |
 
 ### Retrieval & reading
 

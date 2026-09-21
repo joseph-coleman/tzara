@@ -4207,11 +4207,11 @@ async def graph_global(request: Request):
     tags_on = request.query_params.get("tags") in ("1", "true", "on")
 
     try:
-        canvas = await asyncio.to_thread(
-            graph_canvas.build_canvas, None, 1, False, tags_on, vault)
+        canvas, relax_groups = await asyncio.to_thread(
+            graph_canvas.build_canvas_relaxed, None, 1, False, tags_on, vault)
     except Exception as e:
         print(f"graph_global failed: {e}")
-        canvas = {"nodes": [], "edges": []}
+        canvas, relax_groups = {"nodes": [], "edges": []}, []
 
     graph_template = jinja_env.get_template("graph.html")
     return HTMLResponse(graph_template.render({
@@ -4227,6 +4227,9 @@ async def graph_global(request: Request):
         "graph_root_url": f"/graph/{vault}",
         "graph_depth": 1,
         "graph_tags_on": tags_on,
+        # Components too big for the server layout arrive as a grid; graph.html
+        # relaxes each in the browser.
+        "graph_relax_groups": json.dumps(relax_groups),
     }))
 
 
@@ -4251,11 +4254,12 @@ async def graph_local(request: Request):
     )
 
     try:
-        canvas = await asyncio.to_thread(
-            graph_canvas.build_canvas, root_doc_id, depth, False, tags_on, vault)
+        canvas, relax_groups = await asyncio.to_thread(
+            graph_canvas.build_canvas_relaxed, root_doc_id, depth, False,
+            tags_on, vault)
     except Exception as e:
         print(f"graph_local failed: {e}")
-        canvas = {"nodes": [], "edges": []}
+        canvas, relax_groups = {"nodes": [], "edges": []}, []
 
     name = wikidoc.file_name_no_ext() or "Graph"
     graph_template = jinja_env.get_template("graph.html")
@@ -4272,6 +4276,7 @@ async def graph_local(request: Request):
         "graph_root_url": f"/graph/{vault}/" + quote(path_param, safe="/"),
         "graph_depth": depth,
         "graph_tags_on": tags_on,
+        "graph_relax_groups": json.dumps(relax_groups),
     }))
 
 

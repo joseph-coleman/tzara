@@ -909,18 +909,44 @@
     const autolinkSlot = makeTooltipSlot();
     const citeSlot = makeTooltipSlot();
 
-    // Run `open()` once `pos` is scrolled into view and actually has layout
-    // coords. CodeMirror only lays out the visible viewport, so a floating UI
-    // anchored to an off-screen position (e.g. a bottom-to-top selection, then
-    // "/") otherwise gets null coords and silently never appears. Anchor these
-    // UIs at the selection HEAD (where the caret is) and route them through here.
-    function whenAnchorVisible(view, pos, open) {
-      if (view.coordsAtPos(pos)) { open(); return; }
+    // The vertical band in which a caret is genuinely on screen: the editor's
+    // own scroller clipped to the window. This mirrors the `visible` x `space`
+    // rects CM's tooltip manager intersects, so our answer matches its decision.
+    function visibleBand(view) {
+      const box = view.scrollDOM.getBoundingClientRect();
+      const page = view.dom.ownerDocument.documentElement.clientHeight;
+      return { top: Math.max(box.top, 0), bottom: Math.min(box.bottom, page) };
+    }
+
+    // Whether `pos` is somewhere the user can actually see it. coordsAtPos() is
+    // NOT this test: CM lays out a viewport reaching well past both window
+    // edges, so a caret scrolled far out of sight still reports usable coords.
+    function anchorOnScreen(view, pos) {
+      const coords = view.coordsAtPos(pos);
+      if (!coords) return false;
+      const band = visibleBand(view);
+      return coords.bottom > band.top && coords.top < band.bottom;
+    }
+
+    // Bring `pos` back on screen if it has scrolled out of sight. The tooltip
+    // manager parks an overlay whose anchor is off-screen at top:-10000px and
+    // restores it when the anchor returns, so scrolling the anchor back is all
+    // it takes to make an invisible menu reappear. Call this before consuming a
+    // keystroke: a key that lands in a parked menu is otherwise just lost.
+    function revealAnchor(view, pos) {
+      if (anchorOnScreen(view, pos)) return;
       view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
-      view.requestMeasure({
-        read: () => view.coordsAtPos(pos),
-        write: (coords) => { if (coords) open(); },
-      });
+    }
+
+    // Run `open()` with `pos` genuinely on screen. Anchor these UIs at the
+    // selection HEAD (where the caret is) and route them through here.
+    function whenAnchorVisible(view, pos, open) {
+      if (anchorOnScreen(view, pos)) { open(); return; }
+      view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+      // CM applies a scroll target inside its measure cycle, after the read
+      // phase of anything we could queue here, so wait a frame before opening
+      // rather than measuring a position that has not moved yet.
+      requestAnimationFrame(() => { if (view.dom.isConnected) open(); });
     }
 
     // Scroll `container` the minimum amount needed to bring `row` fully into
@@ -942,6 +968,20 @@
       } else if (bottom > container.scrollTop + container.clientHeight) {
         container.scrollTop = bottom - container.clientHeight;
       }
+    }
+
+    // Whether an open menu swallows this keydown. Mirrors the branches in the
+    // menu's onKey, kept as one predicate so the off-screen reveal can't drift
+    // out of sync with what is actually consumed. Keys that fall through to
+    // CodeMirror are left alone - PageDown while the menu is parked should keep
+    // scrolling the document, not yank the view back to the caret.
+    function menuConsumesKey(e, menu) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter") return true;
+      // A menu opened over a typed "/" filters through the document instead,
+      // and CM scrolls the caret in on every inserted character by itself.
+      if (!menu || menu.slashStart != null) return false;
+      return e.key === "Backspace"
+        || (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey);
     }
 
     // --- Slash menu plugin ------------------------------------------------
@@ -1055,11 +1095,10 @@
                 to: t.slashPos,
                 insert: t.origText,
               },
-              // Restore the selection preserving its direction, and keep the head
-              // in view - the menu anchors at the head (the end the caret was on),
-              // which is on-screen even for a long bottom-to-top selection.
+              // Restore the selection preserving its direction. The menu anchors
+              // at the head (the end the caret was on); whenAnchorVisible owns
+              // scrolling it in, so don't queue a competing scroll target here.
               selection: { anchor: t.origAnchor, head: t.origHead },
-              effects: EditorView.scrollIntoView(t.origHead, { y: "nearest" }),
             });
             this.openMenu({ mode: "selection", anchorPos: t.origHead });
           } else {
@@ -1102,6 +1141,10 @@
         el.className = "slash-menu slash-menu--detailed";
 
         const onKey = (e) => {
+          // Scrolling the anchor out of sight parks the menu off-screen; a key
+          // it is about to swallow would vanish with it, so scroll back first
+          // and let the tooltip manager restore the menu alongside the caret.
+          if (menuConsumesKey(e, this.menu)) revealAnchor(view, anchorPos);
           if (e.key === "Escape") {
             e.preventDefault();
             this.closeMenu();
@@ -1367,6 +1410,9 @@
       const onOutside = (e) => { if (!el.contains(e.target)) close(); };
 
       input.addEventListener("keydown", (e) => {
+        // The input keeps focus while parked off-screen, so typing would go
+        // into a textarea nobody can see. Scroll the anchor back instead.
+        if (e.key !== "Escape") revealAnchor(view, anchorPos);
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
           submit();

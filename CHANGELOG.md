@@ -10,3 +10,4 @@ Log of changes to public Tzara.  New entries at the bottom.
 * vLuminous - Agent trigger events for file operations. Agent tools for propose delete and propose move.   
 * vErsatz - Editors got new features: section scope, read document tools, multiple choice response.  Addresses some timestamp ambiguity. Proposed changes can be accepted with edits. 
 * vMetaphor - Github style math blocks. Expand command palette commands.  Fix embeds that embed things with relative paths, i.e. embed a document that relative image embeds.  Copy action from index page, and Ctrl-drag to copy, and other index page path fixes.  Some git fixes, performance and dropbox issues, delete commit fix. 
+* vAnarchy - Surface broken links. Fix links in LaTeX as well as code. Fix editor's "/" menu visibility.

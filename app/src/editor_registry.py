@@ -41,9 +41,9 @@ from src.agent_registry import (
     SLUG_RE,
     _extract_python_source,
     _split_sections,
-    strip_comments,
     titleize,
 )
+from src.md_syntax import strip_comments
 from src.frontmatter import unquote
 from src.wikidoc import WikiDoc
 
@@ -232,7 +232,7 @@ def parse_editor_file(slug: str, content: str) -> EditorToolDef:
             f"(allowed: {', '.join(sorted(EDITOR_CAPABILITIES))})")
 
     # Authoring notes (`%%` / HTML comments) never reach the model - see
-    # agent_registry.strip_comments. Stripped before the emptiness check, so a
+    # md_syntax.strip_comments. Stripped before the emptiness check, so a
     # section holding only notes reads as the missing prompt it is.
     d.prompt = strip_comments(sections.get("prompt", ""))
     if not d.prompt:

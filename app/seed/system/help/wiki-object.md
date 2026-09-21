@@ -48,6 +48,7 @@ Every method returns plain lists/dicts, so you can drop the result straight into
 | `wiki.find_near_duplicates(path_prefix="", threshold=0.88, limit=30)` | unlinked doc pairs that say nearly the same thing |
 | `wiki.find_missing_links(path_prefix="", low=0.62, high=0.88, limit=40)` | related-but-unlinked pairs - link candidates |
 | `wiki.list_stale_stubs(path_prefix="", max_chars=400, stale_days=180, limit=40)` | short pages whose file hasn't been modified in `stale_days`, judged by the file's date on this machine (`file_modified`) |
+| `wiki.list_broken_links(path_prefix="", limit=50)` | links whose target page doesn't exist, as `source_doc_id, target, kind, link_type`; `kind` separates a page never created (`planned`) from one that was deleted (`deleted`) |
 
 `path` accepts a vault-relative page path with or without a leading `/` or the `.md` suffix (e.g. `Programming/Code/Pytorch`).
 

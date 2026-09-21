@@ -30,8 +30,8 @@ import subprocess
 from dataclasses import dataclass, field
 
 from config import AGENT_MEMORY_FILE, AGENT_OUTPUT_DIR, SYSTEM_VAULT, vault_root
-from src.chunker import _fence_info
 from src.frontmatter import unquote
+from src.md_syntax import fence_info, strip_comments
 from src.wikidoc import WikiDoc
 
 logger = logging.getLogger("agent_registry")
@@ -150,7 +150,7 @@ def _walk_fenced(lines):
     fence_count, fence_char = 0, None
     for line in lines:
         opened_lang = None
-        count, char = _fence_info(line)
+        count, char = fence_info(line)
         if fence_count == 0 and count:
             fence_count, fence_char = count, char
             opened_lang = line.strip().lstrip(char).strip().lower() or None
@@ -185,41 +185,13 @@ def _split_sections(body: str) -> dict[str, str]:
     return sections
 
 
-# The two comment syntaxes this wiki already hides from a READER: Obsidian's
-# `%%` (ObsidianCommentExtension, and skipped wholesale by the RAG chunker) and
-# raw HTML comments. Both spellings are matched non-greedily and DOTALL, so the
-# inline (`%% note %%`) and block (`%%` on its own line) forms are one rule.
-_COMMENT_RE = re.compile(r"%%.*?%%|<!--.*?-->", re.S)
-
-
-def strip_comments(text: str) -> str:
-    """Drop `%% ... %%` and `<!-- ... -->` from text that becomes an LLM prompt.
-
-    Comments are this file format's authoring-notes channel: invisible on the
-    rendered page, visible while editing. That is only a safe channel if they
-    are invisible to the MODEL too - otherwise the starter template's own
-    scaffolding is read as part of the directive by every author who didn't
-    delete it, and any note left in a `# Prompt` section becomes silent prompt
-    contamination that nothing in the UI would show. A note that vanishes from
-    the page, from RAG, and from the prompt is one consistent rule an author can
-    hold in their head.
-
-    Applied to the directive/kickoff text ONLY. Fenced python (py_source),
-    frontmatter, and anything an agent writes are untouched - the cost of the
-    rule is that a prompt cannot ask for a literal `%%`/`<!-- -->` sequence,
-    which is a fair trade for "notes in this file never reach the model".
-    """
-    out = _COMMENT_RE.sub("", text)
-    return re.sub(r"\n{3,}", "\n\n", out).strip()
-
-
 def _extract_python_source(body: str) -> str:
     """Concatenated contents of all fenced ```python blocks (fence lines
     excluded) - the agent's human-authored custom tool code."""
     out: list[str] = []
     collecting = False
     for line, in_fence, lang in _walk_fenced(body.split("\n")):
-        opened_or_closed_fence = line.strip() and _fence_info(line)[0] >= 3
+        opened_or_closed_fence = line.strip() and fence_info(line)[0] >= 3
         if lang in ("python", "py"):
             collecting = True
             continue

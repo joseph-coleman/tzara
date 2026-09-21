@@ -56,7 +56,7 @@ The internal docker networks, **tzara-net** and **agent-net** are used to isolat
 
 For every markdown page kernel there is a `wiki` object, and a different object, but still named `wiki`, for custom agent tools.  
 
-The markdown page `wiki` object has methods for search, related, tagged, backlinks, frontmatter, query documents, edges, document tags, list orphans, find near duplicates, find missing links, and list stale stubs, all bound to the vault the page is in. 
+The markdown page `wiki` object has methods for search, related, tagged, backlinks, frontmatter, query documents, edges, document tags, list orphans, find near duplicates, find missing links, list stale stubs, and list broken links, all bound to the vault the page is in. 
 
 The agent `wiki` object, again, tied to a specific vault at runtime, can do everything the other wiki object can do.  However, this agent wiki object can also read pages and stage a write operation for human review. 
 

@@ -18,6 +18,18 @@ from markdown.preprocessors import Preprocessor
 from markdown.treeprocessors import Treeprocessor
 
 from config import PREVIEW_EMBED_FILE_TYPES
+from src.md_syntax import (
+    EMBED_RE,
+    MATH_BLOCK_BRACKET_RE,
+    MATH_BLOCK_DOLLAR_RE,
+    MATH_INLINE_BRACKET_RE,
+    MATH_INLINE_DOLLAR_RE,
+    MATH_INLINE_DOUBLEDOLLAR_RE,
+    MATH_INLINE_PAREN_RE,
+    STANDALONE_EMBED_RE,
+    WIKILINK_INNER_RE,
+    math_span_re,
+)
 from src.fenced_block import replace_top_level_fences
 from src.md_sections import strip_comment_blocks
 
@@ -211,10 +223,11 @@ class WikiLinkExtension(Extension):
 
     def extendMarkdown(self, md):
 
-        WIKI_LINK_RE = r"\[\[([^\]]+)\]\]"  # matches [[Page Name]]
+        # The INNER form: this processor splits `|alias` itself, because it has to
+        # emit the alias as the link text. Extraction wants md_syntax.WIKILINK_RE.
         md.inlinePatterns.register(
             WikiLinkInlineProcessor(
-                WIKI_LINK_RE,
+                WIKILINK_INNER_RE,
                 config=self.getConfigs(),
             ),
             "wikilink",
@@ -233,9 +246,8 @@ class ImageEmbedInlineProcessor(InlineProcessor):
 
 class ImageEmbedExtension(Extension):
     def extendMarkdown(self, md):
-        IMAGE_EMBED_RE = r"!\[\[([^\]]+)\]\]"  # Matches ![[filename]]
         md.inlinePatterns.register(
-            ImageEmbedInlineProcessor(IMAGE_EMBED_RE, md), "image_embed", 175
+            ImageEmbedInlineProcessor(EMBED_RE, md), "image_embed", 175
         )
 
 
@@ -252,7 +264,7 @@ class CanvasEmbedPreprocessor(Preprocessor):
     conditional-script flow MermaidExtension uses (see base.html)."""
 
     # Whole-line embed only. Height is an optional ``|N`` suffix, Obsidian-style.
-    RE = re.compile(r"^[ \t]*!\[\[([^\]\n]+?)\]\][ \t]*$", re.MULTILINE)
+    RE = re.compile(STANDALONE_EMBED_RE, re.MULTILINE)
 
     def __init__(self, md, config):
         super().__init__(md)
@@ -346,7 +358,7 @@ class FileEmbedPreprocessor(Preprocessor):
     preview rows to the browser, never the whole file. PDF is a static iframe.
     """
 
-    RE = re.compile(r"^[ \t]*!\[\[([^\]\n]+?)\]\][ \t]*$", re.MULTILINE)
+    RE = re.compile(STANDALONE_EMBED_RE, re.MULTILINE)
 
     def __init__(self, md, config):
         super().__init__(md)
@@ -610,7 +622,7 @@ class TranscludeEmbedPreprocessor(Preprocessor):
     into a container, so nested includes, mermaid, jupyter, wikilinks etc. all
     work inside an embed; recursion is bounded by max_depth + a visited-set."""
 
-    RE = re.compile(r"^[ \t]*!\[\[([^\]\n]+?)\]\][ \t]*$", re.MULTILINE)
+    RE = re.compile(STANDALONE_EMBED_RE, re.MULTILINE)
 
     def __init__(self, md, config):
         super().__init__(md)
@@ -891,22 +903,6 @@ class AutoLinkExtension(Extension):
         md.inlinePatterns.register(AutoLinkInlineProcessor(URL_RE, md), "autolink", 200)
 
 
-# Inline code span: a run of N backticks closed by exactly N, not crossing a
-# blank line (markdown's inline pass never pairs backticks across paragraphs).
-_CODE_SPAN = r"(?<!\\)(?P<fence>`+)(?:(?!\n[ \t]*\n).)+?(?<!`)(?P=fence)(?!`)"
-
-
-def _math_re(pattern, flags=0):
-    """
-    Compile a math pattern with an inline-code-span alternative ahead of it.
-
-    Math runs as a preprocessor, before markdown's inline pass has claimed code
-    spans, so `$` in `` `$` `` would otherwise open a formula. As one regex, the
-    leftmost of code span or formula wins, matching a real inline parser.
-    """
-    return re.compile(rf"(?P<code>{_CODE_SPAN})|{pattern}", flags | re.DOTALL)
-
-
 class UnifiedMathPreprocessor(Preprocessor):
     # """
     # Handles all math delimiters via regex replacements:
@@ -916,24 +912,15 @@ class UnifiedMathPreprocessor(Preprocessor):
     #   - $$ ... $$ (block)
     # """
 
-    # Patterns; each captures the formula as `tex`.
-    RE_BLOCK_DOLLAR = _math_re(r"^\$\$\s*\n(?P<tex>.*?)\n\s*\$\$", re.MULTILINE)
-    RE_BLOCK_BRACKET = _math_re(
-        r"^\s*\\\[\s*\n(?P<tex>.*?)\n\s*\\\]\s*$", re.MULTILINE
-    )
-    # RE_INLINE_DOLLAR = re.compile(
-    #     r"(?<!\\)(?<!\$)\$(?!\$)(.+?)(?<!\\)(?<!\$)\$(?!\$)", re.DOTALL
-    # )
-
-    RE_INLINE_DOLLAR = _math_re(
-        r"(?<!\\)(?<!\$)\$(?!\$)(?!\d)(?P<tex>.+?)(?<!\\)(?<!\$)\$(?!\$)"
-    )
-
-    RE_INLINE_DOUBLEDOLLAR = _math_re(
-        r"(?<!\\)(?<!\$)\$\$(?!\$)(?P<tex>.+?)(?<!\\)(?<!\$)\$\$(?!\$)"
-    )
-    RE_INLINE_PAREN = _math_re(r"(?<!\\)\\\((?P<tex>.+?)\\\)")
-    RE_INLINE_BRACKET = _math_re(r"(?<!\\)\\\[(?P<tex>.+?)\\\]")
+    # Delimiters come from chunker, the canonical markdown-syntax module, so link
+    # extraction skips exactly the spans this preprocessor claims. Each captures
+    # the formula as `tex`; run() below applies them in MATH_SPAN_PATTERNS order.
+    RE_BLOCK_DOLLAR = math_span_re(MATH_BLOCK_DOLLAR_RE, re.MULTILINE)
+    RE_BLOCK_BRACKET = math_span_re(MATH_BLOCK_BRACKET_RE, re.MULTILINE)
+    RE_INLINE_DOLLAR = math_span_re(MATH_INLINE_DOLLAR_RE)
+    RE_INLINE_DOUBLEDOLLAR = math_span_re(MATH_INLINE_DOUBLEDOLLAR_RE)
+    RE_INLINE_PAREN = math_span_re(MATH_INLINE_PAREN_RE)
+    RE_INLINE_BRACKET = math_span_re(MATH_INLINE_BRACKET_RE)
 
     def _sub(self, pattern, fmt, text):
         """Stash each formula as `fmt` around its TeX; code spans pass through."""

@@ -22,6 +22,7 @@ off the event loop and enforces the schemas' parameter bounds.
 import psycopg2.extras
 
 from config import AGENT_OUTPUT_DIR
+from src import vault_index
 from src.rag_search import _get_pg_connection
 
 # SQL LIKE prefix matching every agent-owned page (e.g. "_dada/%").
@@ -222,6 +223,88 @@ def list_stale_stubs(vault_id: str, conn=None,
     return [d for _, d in stale[:limit]]
 
 
+def list_broken_links(vault_id: str, conn=None,
+                      limit: int = 50,
+                      path_prefix: str = "") -> list[dict]:
+    """Links whose target does not exist - the read side of the link-write tools.
+
+    Two kinds, reported together because the fix differs:
+      * ``planned`` - the target was never created (an unresolved edge). Either
+        write the page or drop the link.
+      * ``deleted`` - the target existed and was deleted, leaving a tombstone
+        documents row. Here the LINKING page is what needs fixing.
+
+    An unresolved edge is only a CANDIDATE, not a finding. Canvas files and agent
+    output are excluded from the RAG index, so they have no documents row and
+    every link to them looks unresolved while rendering perfectly. Each candidate
+    is therefore confirmed against the FILESYSTEM with the renderer's own resolver
+    (``vault_index.resolve``, whose index covers every file type, not just .md)
+    and dropped if the file is really there - which also settles separator and
+    case variants like [[Scratch Canvas.canvas]] vs Scratch_Canvas.canvas.
+
+    Not every row is a mistake: wikilink syntax quoted in prose is
+    indistinguishable from a real link ([[Ceres]] vs [[target]]), so the caller
+    has to read the source page before changing it.
+
+    One row per broken link rather than one per missing target: fan-in is close to
+    1 in practice, and the flat (source, target) pair is what the fix tools take.
+    Ordering by target keeps repeated links to one missing page adjacent anyway.
+    """
+    own = conn is None
+    if own:
+        conn = _get_pg_connection()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # No LIMIT here: the disk check below removes rows, so a SQL cap would let
+        # non-findings eat the caller's budget. Unresolved edges are inherently
+        # rare (tens across a whole install), so the candidate set is small.
+        cur.execute(
+            """
+            SELECT e.source_doc_id, e.target_title, e.edge_type,
+                   'planned' AS kind
+            FROM edges e
+            WHERE e.vault_id = %(vault)s
+              AND e.resolved = FALSE AND e.target_doc_id IS NULL
+              AND e.source_doc_id NOT LIKE %(owned)s
+              AND e.source_doc_id LIKE %(prefix)s ESCAPE '\\'
+            UNION ALL
+            SELECT e.source_doc_id, e.target_title, e.edge_type,
+                   'deleted' AS kind
+            FROM edges e
+            JOIN documents t ON t.vault_id = e.vault_id AND t.doc_id = e.target_doc_id
+            WHERE e.vault_id = %(vault)s
+              AND t.doc_exists = FALSE
+              AND e.source_doc_id NOT LIKE %(owned)s
+              AND e.source_doc_id LIKE %(prefix)s ESCAPE '\\'
+            """,
+            {"vault": vault_id, "owned": _AGENT_OWNED_PREFIX,
+             "prefix": _like_prefix(path_prefix)},
+        )
+        candidates = cur.fetchall()
+    finally:
+        if own:
+            conn.close()
+
+    broken = []
+    for r in candidates:
+        # The stored title is the raw link text. Drop an Obsidian |alias or
+        # |dimension and any #heading fragment first: both address a part of the
+        # target, so the page to look for is the base -- the same normalization
+        # the indexer applies before resolving (rag_indexer._resolve_target_doc_id).
+        target = (r["target_title"] or "").split("|", 1)[0].split("#", 1)[0].strip()
+        if not target:
+            continue
+        source = r["source_doc_id"]
+        source_dir = source.rsplit("/", 1)[0] if "/" in source else ""
+        if vault_index.resolve(target, source_dir, vault_id):
+            continue                                # the file exists; not broken
+        broken.append({"source_doc_id": source, "target": target,
+                       "kind": r["kind"], "link_type": r["edge_type"]})
+
+    broken.sort(key=lambda d: (d["target"].lower(), d["source_doc_id"]))
+    return broken[:limit]
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (same shape as chat.TOOL_DEFINITIONS) + name set
 # ---------------------------------------------------------------------------
@@ -279,6 +362,21 @@ ANALYSIS_TOOL_DEFINITIONS = [
             "path_prefix": _PREFIX_PARAM,
             "limit": {"type": "integer", "description": "Max rows.",
                       "default": 40, "minimum": 1, "maximum": 200},
+        }, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "list_broken_links",
+        "description": ("List links that point nowhere, with the kind of breakage: "
+                        "'planned' (the target page was never created - write it or "
+                        "drop the link) or 'deleted' (the target was removed - fix the "
+                        "linking page). Links to files that exist but are not indexed, "
+                        "such as canvases and agent output, are NOT reported. Wikilink "
+                        "syntax quoted in prose looks identical to a real link, so read "
+                        "the source page before changing it."),
+        "parameters": {"type": "object", "properties": {
+            "path_prefix": _PREFIX_PARAM,
+            "limit": {"type": "integer", "description": "Max rows.",
+                      "default": 50, "minimum": 1, "maximum": 200},
         }, "required": []},
     }},
 ]

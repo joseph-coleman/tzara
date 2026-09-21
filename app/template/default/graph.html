@@ -172,6 +172,61 @@ document.addEventListener('DOMContentLoaded', () => {
         fontFamily: 'Helvetica, Arial, system-ui, "Segoe UI", Roboto, sans-serif',
     });
 
+    // ---- Relax grid-seeded components --------------------------------------
+    // A component past networkx's in-process ceiling can't be laid out on the
+    // server, so graph_canvas seeds it as a plain grid rather than let the view
+    // come back empty, and names it here. Relax each one with the canvas's own
+    // spring simulation to get the organic web smaller graphs get server-side.
+    //
+    // Only the named components move, pinned to the centroid they already
+    // occupy: the rest of the canvas was laid out and shelf-packed correctly,
+    // and simulating the whole thing would pull those tidy clusters into one
+    // blob. Staying on the same centroid also keeps a relaxed component inside
+    // the footprint the packer reserved for its grid, which is the sparser of
+    // the two.
+    const relaxGroups = {{ graph_relax_groups|default('[]', true)|safe }};
+    if (relaxGroups.length) {
+        // The simulation is synchronous and costs O(nodes^2) per iteration, so
+        // derive the iteration count from a time budget instead of fixing it --
+        // a bigger vault then trades smoothness for a bounded pause rather than
+        // freezing the tab for however long 300 iterations happens to take.
+        const BUDGET_MS = 2000;
+        const MS_PER_NODE2_ITER = 8.1e-6;   // measured under V8
+        const centerOf = (ids) => {
+            let sx = 0, sy = 0, n = 0;
+            for (const id of ids) {
+                const nd = canvas.getNode(id);
+                if (!nd) continue;
+                sx += nd.x + nd.width / 2;
+                sy += nd.y + nd.height / 2;
+                n++;
+            }
+            return n ? { x: sx / n, y: sy / n } : null;
+        };
+        // Let the grid paint first: rAF fires before the next paint, so the
+        // timeout inside it runs after it -- the user sees the graph, then the
+        // relaxed version, instead of a blank page for the length of the freeze.
+        requestAnimationFrame(() => setTimeout(() => {
+            for (const ids of relaxGroups) {
+                const c = centerOf(ids);
+                if (!c) continue;
+                const n = ids.length;
+                canvas.layout.auto('force', {
+                    nodes: ids,
+                    x: c.x, y: c.y,
+                    iterations: Math.max(60, Math.min(300,
+                        Math.round(BUDGET_MS / (MS_PER_NODE2_ITER * n * n)))),
+                    springLength: 240,  // graph_canvas._EDGE_LEN: one target gap
+                    duration: 0,        // the simulation already blocks; no tween
+                    // separate (on by default) finishes with the same hard
+                    // overlap pass the server runs after spring_layout, and
+                    // margin defaults to the server's 48px gap.
+                });
+            }
+            try { canvas.camera.fitAll({ padding: 60 }); } catch (e) { /* no-op */ }
+        }, 0));
+    }
+
     // The canvas may treat a pointerdown on a node as a select/drag gesture and
     // swallow the anchor's default navigation. Intercept clicks on internal
     // wiki links in the capture phase and navigate explicitly.

@@ -420,6 +420,7 @@ blockquote,*/
     & p {
         margin-bottom: 0.5em;
         margin-top: 0.5em;
+        line-height: 1.2em;
     }
 
     /* I really like the visual of indented text paragraphs,
@@ -2026,7 +2027,7 @@ details.callout[open]  .callout-title-text::after {
     margin: 0.2em 0;
     margin-right: 0;
     max-width: 100%;
-    line-height: 1.6;
+    line-height: 1.1;
 }
 
 /* System notes + error bubbles: muted, centered, small. */
@@ -2049,6 +2050,7 @@ details.callout[open]  .callout-title-text::after {
 
 .chat-msg.chat-msg-assistant.chat-msg-streaming {
     color: color-mix(in oklab, var(--fg-color) 78%, var(--bg-color));
+    background: linear-gradient(0deg,rgb(from var(--darker) r g b / 0.1) 0%, rgb(from var(--base-color) r g b / 0.1) 30%);
 }
 
 .chat-msg-assistant pre,
@@ -2231,7 +2233,7 @@ pre.chat-code-proposal {
     padding: var(--space-sm) var(--space-md);
     border: 2px solid color-mix(in oklab, var(--base-color) 30%, var(--bg-color));
     background: color-mix(in oklab, var(--base-color) 4%, var(--bg-color));
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
     color: color-mix(in oklab, var(--fg-color) 55%, var(--bg-color));
     max-height: 8em;
     overflow-y: auto;

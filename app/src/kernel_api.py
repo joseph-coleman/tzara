@@ -350,6 +350,13 @@ def _op_analyze_stale_stubs(args: dict, vault_id: str) -> list[dict]:
         path_prefix=str(args.get("path_prefix") or ""))
 
 
+def _op_analyze_broken_links(args: dict, vault_id: str) -> list[dict]:
+    from src import vault_analysis
+    return vault_analysis.list_broken_links(
+        vault_id, limit=_as_int(args.get("limit"), 50),
+        path_prefix=str(args.get("path_prefix") or ""))
+
+
 _OPS = {
     "search": _op_search,
     "related": _op_related,
@@ -365,6 +372,7 @@ _OPS = {
     "find_near_duplicates": _op_analyze_near_duplicates,
     "find_missing_links": _op_analyze_missing_links,
     "list_stale_stubs": _op_analyze_stale_stubs,
+    "list_broken_links": _op_analyze_broken_links,
 }
 
 

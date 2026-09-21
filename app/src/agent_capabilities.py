@@ -15,7 +15,7 @@ loop, so adding a capability never means adding dispatcher code.
 
 Sources of capabilities:
 - vault analysis queries (src.vault_analysis) - orphans, near-duplicates,
-  missing links, stale stubs;
+  missing links, stale stubs, broken links;
 - thin wrappers over existing retrieval (kernel_api search/related,
   a vault-scoped document listing);
 - read/outline helpers over the run's staged overlay (write_gate.read_through);

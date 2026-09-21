@@ -63,15 +63,21 @@ from config import (
     IMAGE_FILE_TYPES,
     SPACE_CONVERSION_ORDER,
 )
+# Markdown GRAMMAR lives in md_syntax and is referenced qualified (md_syntax.X)
+# so every use site names where the pattern comes from, and so this module
+# cannot quietly become a second home for it again. What is left here is
+# chunking, extraction and link RESOLUTION -- not syntax.
+from src import md_syntax
+from src.md_sections import strip_comment_blocks
 
 
-WIKILINK_RE = r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]"
-EMBED_RE = r"!\[\[([^\]]+)\]\]"
-TAG_RE = r"(?:^|\s)#([a-zA-Z][a-zA-Z0-9_/-]*)"
-MD_HEADER = r"^#{1,6}\s+(.+)"
-SETEXT_HEADER1 = r"^=+\s*$"
-SETEXT_HEADER2 = r"^-+\s*$"
 SENTENCE_SPLIT_RE = r'(?<=[.!?])\s+(?=[A-Z])'
+
+# Chunk types whose content is markup being typeset or executed, not prose. The
+# line scanner strips a latex chunk's own `$$`/`\[` delimiters, so its content
+# reaches the extractors as bare TeX that no math pattern can recognize -- for
+# those the chunk TYPE is the only gate available.
+NON_LINKING_CHUNK_TYPES = frozenset({"code", "latex"})
 
 # Embed targets with one of these extensions are classified as "assets" (recorded
 # in asset_refs and rewritten on move) rather than document embeds. Derived from
@@ -84,54 +90,9 @@ ASSET_EXTENSIONS = {f".{ext}" for ext in ATTACHMENT_FILE_TYPES}
 # Derived from the canonical config list (dotted form) so it can't drift.
 IMAGE_EXTENSIONS = {f".{ext}" for ext in IMAGE_FILE_TYPES}
 
-# Standard markdown link target: [label](target) and image ![alt](target). Captures
-# the target up to whitespace or the closing paren, tolerating an optional <...> wrap.
-MD_LINK_TARGET_RE = r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?[^)]*\)"
 
-# Same syntax, opposite capture: the visible LABEL rather than the destination, for
-# callers flattening markdown to the words a reader sees. Not image-tolerant on
-# purpose -- an image's alt text is not prose (see EMBED_RE for the wiki spelling).
-MD_LINK_LABEL_RE = r"\[([^\]]*)\]\([^)]*\)"
-
-# A list marker and the space after it: bullet (-, *, +) or ordered (1.). The
-# paren form `1)` is deliberately absent -- verified against the renderer
-# (python-markdown + sane_lists), which emits `<p>1) Item</p>`, not a list.
-# Probably should update sane_lists to fix this gap.
-# Unanchored so callers compose it -- match against an already-dedented line, or
-# prefix `^[ \t]*` to take the indent too.
-MD_LIST_MARKER_RE = r"(?:[-*+]|\d+\.)[ \t]+"
-
-# The task checkbox that may follow a list marker: `- [ ]`, `- [x]`, `1. [X]`.
-# Separate from the marker because it is not consumed with it -- no task-list
-# extension is enabled, so the renderer emits `[x]` as LITERAL text inside the
-# <li>, and anything showing list content to a human should show it too.
-MD_TASK_BOX_RE = r"\[[ xX]\][ \t]*"
-
-
-def lawrence(body, title="", max_chunk_size=500):
+def lawrence(body, title="", max_chunk_size=2000):
     return chunk(body, title, max_chunk_size)
-
-
-def _backtick_count(line):
-    m = re.match(r"^`+", line)
-    return len(m.group()) if m else 0
-
-
-def _tilde_count(line):
-    m = re.match(r"^~+", line)
-    return len(m.group()) if m else 0
-
-
-def _fence_info(line):
-    """Check if a line starts a code fence (``` or ~~~).
-    Returns (count, char) or (0, None)."""
-    bc = _backtick_count(line)
-    if bc >= 3:
-        return bc, "`"
-    tc = _tilde_count(line)
-    if tc >= 3:
-        return tc, "~"
-    return 0, None
 
 
 def _parse_frontmatter(content):
@@ -150,9 +111,15 @@ def _strip_frontmatter(content):
 
 
 def extract_wikilinks(text):
-    """Extract wikilink targets from text, excluding embeds."""
-    text_without_embeds = re.sub(EMBED_RE, "", text)
-    return re.findall(WIKILINK_RE, text_without_embeds)
+    """Extract wikilink targets from text, excluding embeds.
+
+    Code is not text: `[[Page]]` inside a fence or a code span is markup being
+    SHOWN, not a link, and the renderer emits it verbatim -- so the graph must not
+    record an edge for it either. Math is not text for the same reason.
+    """
+    text_without_embeds = re.sub(md_syntax.EMBED_RE, "",
+                                 md_syntax.without_code_or_math(text))
+    return md_syntax.findall_outside_code(md_syntax.WIKILINK_RE, text_without_embeds)
 
 
 def md_link_page_target(target):
@@ -173,7 +140,7 @@ def md_link_page_target(target):
 
     Leading ``./``/``../`` hops are dropped: resolve_linkpath matches vault-globally by
     path suffix, so the prefix a filesystem-relative link needs is noise to it. Any
-    ``#anchor`` is preserved for the caller to strip, matching WIKILINK_RE.
+    ``#anchor`` is preserved for the caller to strip, matching md_syntax.WIKILINK_RE.
     """
     t = target.strip()
     if not t or "://" in t or t.startswith(("#", "mailto:")):
@@ -208,13 +175,15 @@ def extract_page_links(text):
     narrow primitive for callers that mean the ``[[...]]`` syntax specifically.
     """
     targets = extract_wikilinks(text)
-    text_without_embeds = re.sub(EMBED_RE, "", text)
-    for m in re.finditer(MD_LINK_TARGET_RE, text_without_embeds):
+    text_without_embeds = re.sub(md_syntax.EMBED_RE, "",
+                                 md_syntax.without_code_or_math(text))
+    for m in md_syntax.finditer_outside_code(md_syntax.MD_LINK_TARGET_RE,
+                                             text_without_embeds):
         # MD_LINK_TARGET_RE is image-tolerant; the `![...](...)` form is an embed,
         # which extract_embeds owns, so only the plain link form is a page link.
         if m.group(0).startswith("!"):
             continue
-        page = md_link_page_target(m.group(1))
+        page = md_link_page_target(m.group(1 + md_syntax.CODE_ALT_GROUPS))
         if page is not None:
             targets.append(page)
     return targets
@@ -375,8 +344,9 @@ def shortest_linkpath(path, source_dir, *, by_stem):
 
 
 def extract_embeds(text):
-    """Extract embed targets from text."""
-    return re.findall(EMBED_RE, text)
+    """Extract embed targets from text, skipping code and math (see extract_wikilinks)."""
+    return md_syntax.findall_outside_code(md_syntax.EMBED_RE,
+                                          md_syntax.without_code_or_math(text))
 
 
 def _classify_embed(target):
@@ -428,7 +398,7 @@ def extract_data_file_refs(text):
 
     for target in extract_embeds(text):
         _consider(target, allow_folder=False)
-    for target in re.findall(MD_LINK_TARGET_RE, text):
+    for target in re.findall(md_syntax.MD_LINK_TARGET_RE, text):
         _consider(target, allow_folder=True)
     return out
 
@@ -436,7 +406,7 @@ def extract_data_file_refs(text):
 def extract_tags(text):
     """Extract inline #tags from text."""
     tags = []
-    for match in re.finditer(TAG_RE, text, re.MULTILINE):
+    for match in re.finditer(md_syntax.TAG_RE, text, re.MULTILINE):
         tags.append(match.group(1))
     return list(set(tags))
 
@@ -571,9 +541,9 @@ def _split_oversized_by_lines(chunk_dict, max_size):
     if current:
         pieces.append(current)
 
-    # Mirror the post-processing extraction rules: code chunks carry no wikilinks/
-    # embeds/tags; other non-prose types (latex, header) get links/embeds but not tags.
-    is_code = chunk_dict["chunk_type"] == "code"
+    # Mirror the post-processing extraction rules: code and latex chunks carry no
+    # wikilinks/embeds/tags; header chunks get links/embeds but not tags.
+    is_markup = chunk_dict["chunk_type"] in NON_LINKING_CHUNK_TYPES
     splits = []
     for piece in pieces:
         new_chunk = {
@@ -581,12 +551,12 @@ def _split_oversized_by_lines(chunk_dict, max_size):
             "chunk_type": chunk_dict["chunk_type"],
             "content": piece,
             "header_path": list(chunk_dict["header_path"]),
-            "wikilinks": [] if is_code else extract_page_links(piece),
+            "wikilinks": [] if is_markup else extract_page_links(piece),
             "tags": [],
             "asset_refs": [],
             "doc_embeds": [],
         }
-        if not is_code:
+        if not is_markup:
             for target in extract_embeds(piece):
                 if _classify_embed(target) == "asset":
                     new_chunk["asset_refs"].append(target)
@@ -615,9 +585,7 @@ def chunk(body, title="", max_chunk_size=2000):
     # Shared with the renderer (ObsidianCommentExtension) so the index and the
     # page cannot disagree about what counts as a comment. It runs BEFORE the
     # setext pass below so an `===` underline inside a comment is not read as
-    # document structure. Lazy import breaks the md_sections <-> chunker cycle
-    # (md_sections imports _fence_info from here), same as _parse_frontmatter.
-    from src.md_sections import strip_comment_blocks
+    # document structure.
     body = strip_comment_blocks(body)
 
     lines = body.split("\n")
@@ -629,7 +597,8 @@ def chunk(body, title="", max_chunk_size=2000):
     # Setext headers require a lookback (text on previous line, blank before that).
     for n in range(len(lines)):
         line = lines[n]
-        if re.match(SETEXT_HEADER1, line) or re.match(SETEXT_HEADER2, line):
+        if (re.match(md_syntax.SETEXT_HEADER1, line)
+                or re.match(md_syntax.SETEXT_HEADER2, line)):
             if n >= 2:
                 if re.match(NON_WHITESPACE, lines[n - 1]) and (
                     re.match(WHITESPACE, lines[n - 2]) or len(lines[n - 2]) == 0
@@ -685,7 +654,7 @@ def chunk(body, title="", max_chunk_size=2000):
         line = lines[n]
 
         # --- Code fence detection (backticks and tildes) ---
-        fc, fchar = _fence_info(line)
+        fc, fchar = md_syntax.fence_info(line)
         is_fence_line = fc >= 3 and not in_latex_block
 
         if is_fence_line:
@@ -716,7 +685,8 @@ def chunk(body, title="", max_chunk_size=2000):
         # "unterminated opener is not a delimiter" rule and swallows to EOF.
 
         # --- LaTeX block detection: $$ ---
-        if re.match(r"^\$\$\s*$", line) and not in_code_block:
+        if (re.match(md_syntax.MATH_BLOCK_DOLLAR_LINE_RE, line)
+                and not in_code_block):
             if not in_latex_block:
                 in_latex_block = True
                 make_chunk("latex")
@@ -744,7 +714,7 @@ def chunk(body, title="", max_chunk_size=2000):
             continue
 
         # --- Header detection ---
-        if re.match(MD_HEADER, line):
+        if re.match(md_syntax.MD_HEADER_RE, line):
             split_string = line.split(None, maxsplit=1)
             if len(split_string) != 2:
                 continue
@@ -778,7 +748,7 @@ def chunk(body, title="", max_chunk_size=2000):
 
     # Extract wikilinks, embeds, and tags from each chunk
     for c in document_chunks:
-        if c["chunk_type"] != "code":
+        if c["chunk_type"] not in NON_LINKING_CHUNK_TYPES:
             content = c["content"]
             c["wikilinks"] = extract_page_links(content)
             for target in extract_embeds(content):
